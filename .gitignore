@@ -24,3 +24,4 @@ chatwoot_raw/
 sgp_raw/
 *.dump
 *.sql.gz
+.env.deploy.local
