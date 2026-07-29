@@ -105,13 +105,13 @@ export async function handleInbound(payload) {
 export function createWhatsappTestServer() {
   return http.createServer(async (req, res) => {
   try {
-    if (req.method === 'GET' && req.url === '/health') {
+    if (req.method === 'GET' && ['/health', '/emy-v2/health'].includes(req.url)) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, service: 'emy-whatsapp-test-runtime', checked_at: new Date().toISOString() }));
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/webhooks/evolution') {
+    if (req.method === 'POST' && ['/webhooks/evolution', '/emy-v2/webhooks/evolution'].includes(req.url)) {
       const payload = await readJson(req);
       const result = await handleInbound(payload);
       res.writeHead(200, { 'Content-Type': 'application/json' });
