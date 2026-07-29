@@ -25,7 +25,7 @@ function readJson(req) {
   });
 }
 
-function extractEvolutionMessage(payload) {
+export function extractEvolutionMessage(payload) {
   const data = payload?.data || payload;
   const key = data?.key || payload?.key || {};
   const message = data?.message || payload?.message || {};
@@ -41,6 +41,7 @@ function extractEvolutionMessage(payload) {
 
   return {
     from,
+    fromMe: Boolean(key?.fromMe || data?.fromMe || payload?.fromMe),
     text: String(text || '').trim(),
     messageId: key?.id || data?.id || payload?.id || '',
     pushName: data?.pushName || payload?.pushName || '',
@@ -48,12 +49,16 @@ function extractEvolutionMessage(payload) {
   };
 }
 
-async function handleInbound(payload) {
+export async function handleInbound(payload) {
   const inbound = extractEvolutionMessage(payload);
   const allowlist = parseAllowlist(process.env.EMY_TEST_WHATSAPP_ALLOWLIST || '');
 
   if (!inbound.from || !inbound.text) {
     return { ok: true, ignored: true, reason: 'empty_or_unsupported_message' };
+  }
+
+  if (inbound.fromMe) {
+    return { ok: true, ignored: true, reason: 'from_me_message' };
   }
 
   if (!allowlist.includes(inbound.from)) {
@@ -97,7 +102,8 @@ async function handleInbound(payload) {
   };
 }
 
-const server = http.createServer(async (req, res) => {
+export function createWhatsappTestServer() {
+  return http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -119,15 +125,19 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: error.message }));
   }
-});
+  });
+}
 
-server.listen(PORT, () => {
-  console.log(JSON.stringify({
-    ok: true,
-    service: 'emy-whatsapp-test-runtime',
-    port: PORT,
-    auto_send_to_customer: process.env.AUTO_SEND_TO_CUSTOMER,
-    test_mode: process.env.EMY_TEST_MODE,
-    allowlist_count: parseAllowlist(process.env.EMY_TEST_WHATSAPP_ALLOWLIST || '').length,
-  }));
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const server = createWhatsappTestServer();
+  server.listen(PORT, () => {
+    console.log(JSON.stringify({
+      ok: true,
+      service: 'emy-whatsapp-test-runtime',
+      port: PORT,
+      auto_send_to_customer: process.env.AUTO_SEND_TO_CUSTOMER,
+      test_mode: process.env.EMY_TEST_MODE,
+      allowlist_count: parseAllowlist(process.env.EMY_TEST_WHATSAPP_ALLOWLIST || '').length,
+    }));
+  });
+}

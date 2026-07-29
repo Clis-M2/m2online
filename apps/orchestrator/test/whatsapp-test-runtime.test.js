@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { extractCpfCnpj, maskDocument } from '../src/core/document.js';
 import { assertSafeOutbound } from '../src/core/safety.js';
 import { buildCustomerPaymentMessage } from '../src/core/payment-message.js';
+import { extractEvolutionMessage } from '../src/whatsapp-test-runtime.js';
 
 test('extractCpfCnpj extracts formatted CPF from financial message', () => {
   assert.equal(extractCpfCnpj('quero boleto do CPF 031.346.044-26'), '03134604426');
@@ -25,6 +26,18 @@ test('assertSafeOutbound allows only test allowlisted recipient with auto send e
     allowed: true,
     reason: 'recipient_allowlisted_test_mode',
   });
+});
+
+test('extractEvolutionMessage detects fromMe messages to prevent self-reply loops', () => {
+  const inbound = extractEvolutionMessage({
+    data: {
+      key: { remoteJid: '5581920016907@s.whatsapp.net', fromMe: true, id: 'abc' },
+      message: { conversation: 'mensagem enviada pela própria instância' },
+    },
+  });
+
+  assert.equal(inbound.from, '5581920016907');
+  assert.equal(inbound.fromMe, true);
 });
 
 test('buildCustomerPaymentMessage includes payment channels when available', () => {
