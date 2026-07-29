@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# env/secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# logs and local outputs
+logs/
+*.log
+coverage/
+dist/
+build/
+.tmp/
+
+# customer data / raw exports
+exports/
+raw-data/
+chatwoot_raw/
+sgp_raw/
+*.dump
+*.sql.gz
