@@ -15,6 +15,23 @@ Validar a arquitetura com uma demanda de menor risco: intenção financeira, con
 7. Registrar decisão e tool calls.
 8. Humano aprova ou descarta.
 
+## Implementação mockada atual
+
+A POC local já possui um fluxo mockado em `apps/orchestrator`:
+
+- `MockSupabaseAdapter`: simula estado, logs de ferramentas e decisões.
+- `MockSgpAdapter`: simula busca de cliente e faturas abertas.
+- `MockEvolutionAdapter`: cria apenas rascunho, com `sentToCustomer = false`.
+- Router simples: classifica Financeiro, Suporte, Comercial ou Triagem por termos-chave.
+
+## Como validar
+
+```bash
+npm run dev:orchestrator
+npm test
+npm run lint
+```
+
 ## Critérios de aceite
 
 - Nenhum dado de outro cliente exposto.
@@ -23,3 +40,12 @@ Validar a arquitetura com uma demanda de menor risco: intenção financeira, con
 - Fallback humano em erro.
 - Sem escrita no SGP.
 - Sem envio automático para cliente real.
+- Toda resposta financeira começa como sugestão assistida.
+
+## Próximos passos
+
+1. Configurar secrets novos fora do repositório.
+2. Criar adapter real do Supabase.
+3. Mapear endpoints reais do SGP.
+4. Criar adapter SGP read-only.
+5. Conectar Chatwoot/Evolution em ambiente de teste.

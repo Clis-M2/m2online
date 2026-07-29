@@ -2,9 +2,12 @@
   "name": "m2-emy-v2",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Emy V2 orchestration project for M2 Online",
   "scripts": {
-    "test": "echo \"No tests yet\"",
-    "lint": "echo \"No lint configured yet\""
+    "dev:orchestrator": "node apps/orchestrator/src/index.js",
+    "payment:info": "node apps/orchestrator/src/cli/payment-info.js",
+    "test": "node --test apps/orchestrator/test/*.test.js",
+    "lint": "node --check apps/orchestrator/src/index.js && node --check apps/orchestrator/src/orchestrator.js && node --check apps/orchestrator/src/adapters/sgp.client.js && node --check apps/orchestrator/src/cli/payment-info.js && node --check tools/validate-connections.mjs"
   }
 }
