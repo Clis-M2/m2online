@@ -3,7 +3,12 @@ import { EvolutionClient } from './adapters/evolution.client.js';
 import { buildPaymentResponse, SgpClient } from './adapters/sgp.client.js';
 import { extractCpfCnpj, maskDocument } from './core/document.js';
 import { loadEnvFile } from './core/env.js';
-import { buildCustomerPaymentMessages } from './core/payment-message.js';
+import {
+  buildCustomerPaymentMessages,
+  buildPaymentDeadlineMessage,
+  buildPaymentLinkMessage,
+  buildPixMessage,
+} from './core/payment-message.js';
 import { classifyIntent } from './core/router.js';
 import { isAllowlistedWhatsappNumber, normalizeWhatsappNumber, parseAllowlist } from './core/safety.js';
 
@@ -12,6 +17,7 @@ loadEnvFile();
 const PORT = Number(process.env.EMY_TEST_PORT || 3333);
 const sgp = new SgpClient();
 const evolution = new EvolutionClient();
+const lastPaymentBySender = new Map();
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -65,6 +71,18 @@ export async function handleInbound(payload) {
     return { ok: true, ignored: true, reason: 'sender_not_allowlisted', from: inbound.from };
   }
 
+  const optionText = inbound.text.toLowerCase().trim();
+  const lastPayment = lastPaymentBySender.get(inbound.from);
+  if (lastPayment && ['1', 'pix', 'pix copia e cola', 'copia e cola'].includes(optionText)) {
+    const send = await evolution.sendText({ to: inbound.from, text: buildPixMessage(lastPayment) });
+    return { ok: true, classification: { area: 'financeiro', intent: 'payment_pix_option', confidence: 1 }, action: send };
+  }
+  if (lastPayment && ['2', 'link', 'link de pagamento', 'qrcode', 'qr code', 'boleto'].includes(optionText)) {
+    const sendLink = await evolution.sendText({ to: inbound.from, text: buildPaymentLinkMessage(lastPayment) });
+    const sendDeadline = await evolution.sendText({ to: inbound.from, text: buildPaymentDeadlineMessage() });
+    return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: sendDeadline, actions: [sendLink, sendDeadline] };
+  }
+
   const classification = classifyIntent(inbound.text);
   if (classification.area !== 'financeiro') {
     const text = 'Recebi sua mensagem no ambiente de teste da Emy V2. Neste primeiro teste estou validando apenas o Financeiro: boleto, PIX, linha digitável e link de pagamento.';
@@ -81,6 +99,7 @@ export async function handleInbound(payload) {
 
   const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
   const payment = buildPaymentResponse(paymentInfo);
+  lastPaymentBySender.set(inbound.from, payment);
   const messages = buildCustomerPaymentMessages(payment);
   const sends = [];
   for (const text of messages) {

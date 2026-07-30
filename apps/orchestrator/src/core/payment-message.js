@@ -3,52 +3,48 @@ export function formatCurrency(value) {
   return number.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export function buildCustomerPaymentMessages(payment) {
+export function buildPaymentMenuMessage(payment) {
   if (!payment?.fatura) {
-    return ['Não encontrei fatura em aberto para esse CPF/CNPJ. Vou deixar registrado para conferência do atendimento.'];
+    return 'Não encontrei fatura em aberto para esse CPF/CNPJ. Vou deixar registrado para conferência do atendimento.';
   }
 
-  const messages = [
-    [
-      'Encontrei sua fatura em aberto:',
-      `Contrato: ${payment.contrato}`,
-      `Fatura: ${payment.fatura}`,
-      `Valor atualizado: ${formatCurrency(payment.valor_atual)}`,
-      `Vencimento: ${payment.vencimento_atual}`,
-    ].join('\n'),
-  ];
+  return [
+    'Encontrei sua fatura em aberto:',
+    `Contrato: ${payment.contrato}`,
+    `Fatura: ${payment.fatura}`,
+    `Valor atualizado: ${formatCurrency(payment.valor_atual)}`,
+    `Vencimento: ${payment.vencimento_atual}`,
+    '',
+    'Como prefere pagar?',
+    '1️⃣ Pix copia e cola',
+    '2️⃣ Link de pagamento / QRCode',
+  ].join('\n');
+}
 
+export function buildPixMessage(payment) {
+  if (!payment?.pix_copia_cola) return 'Não encontrei código Pix disponível para essa fatura.';
+  return ['Código PIX copia e cola:', payment.pix_copia_cola].join('\n');
+}
+
+export function buildPaymentLinkMessage(payment) {
+  if (!payment?.link_pagamento && !payment?.boleto_link) return 'Não encontrei link de pagamento disponível para essa fatura.';
+  const messages = [];
   if (payment.link_pagamento) {
-    messages.push([
-      'QRCode / Link de pagamento:',
-      payment.link_pagamento,
-      'Abra o link acima para visualizar o QR Code na tela.',
-    ].join('\n'));
+    messages.push(['Link de pagamento / QRCode:', payment.link_pagamento].join('\n'));
   }
-
-  if (payment.pix_copia_cola) {
-    messages.push([
-      'Código PIX copia e cola:',
-      payment.pix_copia_cola,
-    ].join('\n'));
-  }
-
-  if (payment.linha_digitavel) {
-    messages.push([
-      'Linha digitável do boleto:',
-      payment.linha_digitavel,
-    ].join('\n'));
-  }
-
   if (payment.boleto_link) {
-    messages.push([
-      'Boleto em PDF/link:',
-      payment.boleto_link,
-    ].join('\n'));
+    messages.push(['Boleto:', payment.boleto_link].join('\n'));
   }
+  return messages.join('\n\n');
+}
 
-  messages.push('Após pagamento por PIX, o reconhecimento costuma ocorrer em até 15 minutos. Boleto pode levar até 3 dias úteis.');
-  return messages;
+export function buildPaymentDeadlineMessage() {
+  return 'Após pagamento por PIX, o reconhecimento costuma ocorrer em até 15 minutos. Boleto pode levar até 3 dias úteis.';
+}
+
+export function buildCustomerPaymentMessages(payment) {
+  if (!payment?.fatura) return [buildPaymentMenuMessage(payment)];
+  return [buildPaymentMenuMessage(payment)];
 }
 
 export function buildCustomerPaymentMessage(payment) {

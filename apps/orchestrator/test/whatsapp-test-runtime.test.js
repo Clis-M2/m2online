@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extractCpfCnpj, maskDocument } from '../src/core/document.js';
 import { assertSafeOutbound, isAllowlistedWhatsappNumber, whatsappNumberVariants } from '../src/core/safety.js';
-import { buildCustomerPaymentMessage, buildCustomerPaymentMessages } from '../src/core/payment-message.js';
+import {
+  buildCustomerPaymentMessage,
+  buildCustomerPaymentMessages,
+  buildPaymentLinkMessage,
+  buildPixMessage,
+} from '../src/core/payment-message.js';
 import { extractEvolutionMessage } from '../src/whatsapp-test-runtime.js';
 
 test('extractCpfCnpj extracts formatted CPF from financial message', () => {
@@ -46,8 +51,8 @@ test('extractEvolutionMessage detects fromMe messages to prevent self-reply loop
   assert.equal(inbound.fromMe, true);
 });
 
-test('buildCustomerPaymentMessages separates summary and payment channels', () => {
-  const messages = buildCustomerPaymentMessages({
+test('buildCustomerPaymentMessages returns a clean payment menu', () => {
+  const payment = {
     contrato: 12044,
     fatura: 160368,
     valor_atual: 130.25,
@@ -56,21 +61,15 @@ test('buildCustomerPaymentMessages separates summary and payment channels', () =
     linha_digitavel: 'linha',
     link_pagamento: 'https://example.invalid/pagar',
     boleto_link: 'https://example.invalid/boleto',
-  });
+  };
 
-  assert.equal(messages.length, 6);
+  const messages = buildCustomerPaymentMessages(payment);
+  assert.equal(messages.length, 1);
   assert.match(messages[0], /Contrato: 12044/);
-  assert.match(messages[1], /QRCode \/ Link de pagamento/);
-  assert.match(messages[2], /Código PIX copia e cola/);
-  assert.match(messages[3], /Linha digitável do boleto/);
-  assert.match(messages[4], /Boleto em PDF\/link/);
+  assert.match(messages[0], /1️⃣ Pix copia e cola/);
+  assert.match(messages[0], /2️⃣ Link de pagamento \/ QRCode/);
 
-  const text = buildCustomerPaymentMessage({
-    contrato: 12044,
-    fatura: 160368,
-    valor_atual: 130.25,
-    vencimento_atual: '2026-04-25',
-    pix_copia_cola: 'pix',
-  });
-  assert.match(text, /Código PIX copia e cola/);
+  assert.match(buildPixMessage(payment), /Código PIX copia e cola/);
+  assert.match(buildPaymentLinkMessage(payment), /Link de pagamento \/ QRCode/);
+  assert.match(buildCustomerPaymentMessage(payment), /Como prefere pagar/);
 });
