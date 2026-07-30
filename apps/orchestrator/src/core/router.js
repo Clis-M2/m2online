@@ -24,16 +24,19 @@ const PRIORITY_BY_AREA = {
 
 const TERMS = {
   financeiro: [
+    'financeiro', 'financeira',
     'boleto', 'segunda via', '2 via', '2ª via', 'pix', 'linha digitavel', 'linha digitável', 'codigo de barras', 'código de barras',
     'pagamento', 'pagar', 'mensalidade', 'fatura', 'vencimento', 'cobranca', 'cobrança', 'debito', 'débito', 'atrasado',
     'bloqueio', 'bloqueado', 'desbloqueio', 'liberar internet', 'comprovante', 'paguei', 'quitar', 'renegociar', 'desconto',
   ],
   suporte: [
+    'suporte', 'tecnico', 'técnico',
     'sem internet', 'sem acesso', 'internet caiu', 'caiu', 'nao navega', 'não navega', 'lento', 'lenta', 'lentidao', 'lentidão',
     'oscilando', 'oscila', 'sinal', 'wifi', 'wi-fi', 'roteador', 'onu', 'los', 'pon', 'cabo rompido', 'cabo', 'conexao', 'conexão',
-    'ping', 'travando', 'intermitente', 'abrir chamado', 'visita tecnica', 'visita técnica', 'suporte', 'tecnico', 'técnico',
+    'ping', 'travando', 'intermitente', 'abrir chamado', 'visita tecnica', 'visita técnica',
   ],
   comercial: [
+    'comercial', 'vendas', 'venda',
     'plano', 'planos', 'instalacao', 'instalação', 'instalar', 'contratar', 'assinar', 'valor', 'preco', 'preço', 'cobertura',
     'viabilidade', 'tem fibra', 'internet para minha casa', 'quero ser cliente', 'novo cliente', 'mudar plano', 'upgrade', 'downgrade',
   ],

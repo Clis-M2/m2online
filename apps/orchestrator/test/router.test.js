@@ -56,6 +56,12 @@ test('router routes mixed support and financial block to finance first', () => {
   assert.ok(result.candidates.some((candidate) => candidate.area === 'suporte'));
 });
 
+test('router routes direct menu replies', () => {
+  assert.equal(classifyIntent('Financeiro').area, 'financeiro');
+  assert.equal(classifyIntent('Suporte').area, 'suporte');
+  assert.equal(classifyIntent('Comercial').area, 'comercial');
+});
+
 test('router asks for clarification when intent is weak', () => {
   const result = classifyIntent('oi bom dia');
 

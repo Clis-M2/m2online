@@ -79,6 +79,11 @@ function rememberOutboundText(to, text) {
   recentOutboundTextBySender.set(to, { text, at: Date.now() });
 }
 
+function forgetOutboundText(to, text) {
+  const recent = recentOutboundTextBySender.get(to);
+  if (recent?.text === text) recentOutboundTextBySender.delete(to);
+}
+
 function summarizePayment(payment) {
   return {
     contrato: payment.contrato,
@@ -356,6 +361,7 @@ export async function handleInbound(payload) {
   latestInboundMessageBySender.set(inbound.from, inboundToken);
   let customerMessagesSent = 0;
   const sendCustomerText = async (text) => {
+    rememberOutboundText(inbound.from, text);
     const result = await evolution.sendTextHumanized({
       to: inbound.from,
       text,
@@ -377,7 +383,7 @@ export async function handleInbound(payload) {
         return true;
       },
     });
-    if (result?.sentToCustomer) rememberOutboundText(inbound.from, text);
+    if (!result?.sentToCustomer) forgetOutboundText(inbound.from, text);
     customerMessagesSent += 1;
     return result;
   };
