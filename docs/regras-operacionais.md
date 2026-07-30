@@ -39,6 +39,27 @@ Mensagem-base ao cliente quando ele insistir no pagamento antecipado:
 
 Pendência operacional: configurar `FINANCE_HUMAN_GROUP_JID` e habilitar `FINANCE_HUMAN_ESCALATION_ENABLED=true` somente após Clistenis confirmar o grupo correto.
 
+### Segurança financeira e validação de identidade
+
+Decisão de segurança: a validação de CPF/CNPJ no atendimento financeiro não é permanente.
+
+Regras implementadas:
+
+- A validação de CPF/CNPJ expira após 30 minutos por padrão (`EMY_DOCUMENT_VALIDATION_TTL_MS=1800000`).
+- Após expirar, a Emy deve pedir o CPF/CNPJ novamente antes de reenviar Pix, link, boleto, linha digitável ou dados financeiros.
+- A Emy permite no máximo 3 tentativas inválidas de CPF/CNPJ (`EMY_MAX_DOCUMENT_ATTEMPTS=3`).
+- Após exceder o limite, a Emy não insiste nem expõe dados; encaminha para humano por segurança.
+- Eventos financeiros relevantes devem ser registrados no Supabase com dados mascarados.
+- Logs persistidos não devem salvar Pix copia e cola, linha digitável, link de pagamento, código de barras ou CPF/CNPJ cru.
+
+Mensagem-base quando a validação expira:
+
+> Por segurança preciso confirmar o CPF/CNPJ novamente. A validação anterior expirou, e eu não quero expor dados financeiros sem confirmar o titular.
+
+Mensagem-base após tentativas inválidas:
+
+> Não consegui validar o CPF/CNPJ com segurança. Para proteger seus dados, vou encaminhar esse atendimento para uma pessoa da equipe conferir com você.
+
 ### Promessa de pagamento
 
 Decisão de Clistenis em 2026-07-29: atendimentos simples de promessa de pagamento devem ser resolvidos pela Emy V2 sem chamar humano.
