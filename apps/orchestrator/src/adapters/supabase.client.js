@@ -65,6 +65,20 @@ export class SupabaseConversationStore {
     };
   }
 
+  async listFinanceConversationStates({ limit = 100 } = {}) {
+    if (!this.enabled) return [];
+    const url = new URL(`${this.restUrl}/conversation_state`);
+    url.searchParams.set('area', 'eq.financeiro');
+    url.searchParams.set('select', '*');
+    url.searchParams.set('order', 'updated_at.desc');
+    url.searchParams.set('limit', String(limit));
+
+    const response = await fetch(url, { headers: this.headers() });
+    const data = await response.json().catch(() => []);
+    if (!response.ok) throw new Error(`Supabase conversation_state LIST ${response.status}: ${JSON.stringify(data).slice(0, 300)}`);
+    return (Array.isArray(data) ? data : []).map(fromDbState);
+  }
+
   async getConversationState({ conversationId, whatsappInstance }) {
     if (!this.enabled) return null;
     const url = new URL(`${this.restUrl}/conversation_state`);

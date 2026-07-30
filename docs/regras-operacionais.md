@@ -39,6 +39,28 @@ Mensagem-base ao cliente quando ele insistir no pagamento antecipado:
 
 Pendência operacional: configurar `FINANCE_HUMAN_GROUP_JID` e habilitar `FINANCE_HUMAN_ESCALATION_ENABLED=true` somente após Clistenis confirmar o grupo correto.
 
+### Follow-up financeiro
+
+Decisão de Clistenis em 2026-07-30: a conversa financeira não deve morrer quando o cliente demora, mas a Emy também não deve ser insistente ou parecer cobrança automática agressiva.
+
+Regras implementadas:
+
+- Quando a Emy pede CPF/CNPJ e o cliente não responde:
+  - 1º lembrete após 10 minutos;
+  - 2º lembrete após 45 minutos;
+  - após 2 horas sem retorno, marcar como `abandoned_waiting_document`, registrar nota no Chatwoot e não chamar humano.
+- Quando a Emy envia Pix ou Pix + link:
+  - verificar SGP após 15 minutos;
+  - se não baixou, verificar novamente após 45 minutos;
+  - se ainda não baixou, enviar apenas 1 lembrete cordial.
+- Quando a Emy envia boleto/link:
+  - verificar SGP no dia seguinte;
+  - verificar novamente após até 3 dias;
+  - se não baixou, enviar apenas 1 lembrete cordial informando prazo de compensação.
+- Se o SGP confirmar pagamento, a Emy avisa o cliente, marca follow-up como concluído, registra nota no Chatwoot e marca o atendimento como seguro para encerrar.
+- A checagem de pagamento usa o ID da fatura, não CPF/CNPJ cru.
+- Follow-ups são registrados dentro de `conversation_state.recent_context.followup` no Supabase.
+
 ### Ritmo humano de resposta no WhatsApp
 
 Decisão de Clistenis em 2026-07-30: a Emy não deve responder de forma instantânea no WhatsApp, porque isso assusta o cliente e pode interromper quem ainda está escrevendo ou enviando áudio.

@@ -21,6 +21,20 @@ import {
   buildPixMessage,
 } from './core/payment-message.js';
 import {
+  buildBoletoStillPendingMessage,
+  buildPaymentConfirmedMessage,
+  buildPixStillPendingMessage,
+  buildWaitingDocumentAbandonedNote,
+  buildWaitingDocumentFollowupMessage,
+  createPaymentFollowup,
+  createWaitingDocumentFollowup,
+  financeFollowupConfig,
+  FOLLOWUP_TYPES,
+  isFollowupDue,
+  nextPaymentFollowup,
+  nextWaitingDocumentFollowup,
+} from './core/finance-followup.js';
+import {
   buildDocumentAttemptMessage,
   buildExpiredDocumentMessage,
   buildSecurityHandoffMessage,
@@ -44,6 +58,8 @@ const MAX_DOCUMENT_ATTEMPTS = Number(process.env.EMY_MAX_DOCUMENT_ATTEMPTS || DE
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
 const latestInboundMessageBySender = new Map();
+let followupRunnerActive = false;
+let followupRunnerBusy = false;
 
 function summarizePayment(payment) {
   return {
@@ -105,6 +121,7 @@ function sanitizeConversationState(state = {}) {
     documentValidatedAt: state.documentValidatedAt,
     documentAttempts: state.documentAttempts || 0,
     securityBlocked: state.securityBlocked || false,
+    followup: state.followup,
     startedAt: state.startedAt,
     updatedAt: state.updatedAt,
   };
@@ -391,6 +408,7 @@ export async function handleInbound(payload) {
       documentValidatedAt: new Date().toISOString(),
       documentAttempts: 0,
       payment,
+      followup: createPaymentFollowup({ payment, requestType: pendingState.requestType }),
     });
 
     const messages = [
@@ -429,6 +447,7 @@ export async function handleInbound(payload) {
       tone,
       name: inbound.pushName,
       startedAt: new Date().toISOString(),
+      followup: createWaitingDocumentFollowup(),
     });
     const text = buildCpfRequestMessage({ name: inbound.pushName, tone });
     const send = await sendCustomerText(text);
@@ -476,6 +495,7 @@ export async function handleInbound(payload) {
     documentValidatedAt: new Date().toISOString(),
     documentAttempts: 0,
     payment,
+    followup: createPaymentFollowup({ payment, requestType: request.type }),
   });
   const messages = [
     buildFoundInvoiceMessage({ name: inbound.pushName, payment, requestType: request.type }),
@@ -494,6 +514,139 @@ export async function handleInbound(payload) {
     action: sends.at(-1),
     actions: sends,
   };
+}
+
+async function savePersistedContext(stateRecord, recentContextPatch, patch = {}) {
+  const recentContext = { ...(stateRecord.recentContext || {}), ...recentContextPatch, updatedAt: new Date().toISOString() };
+  return conversationStore.upsertConversationState({
+    conversationId: stateRecord.conversationId,
+    whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+    from: stateRecord.customerRef || stateRecord.conversationId,
+    area: 'financeiro',
+    intent: patch.intent ?? stateRecord.intent,
+    stage: patch.stage ?? stateRecord.stage,
+    activeAgent: 'emy-financeiro',
+    pendingQuestion: patch.pendingQuestion ?? stateRecord.pendingQuestion,
+    recentContext,
+    safeToClose: patch.safeToClose ?? stateRecord.safeToClose,
+  });
+}
+
+async function processWaitingDocumentFollowup(stateRecord, followup) {
+  const next = nextWaitingDocumentFollowup(followup, process.env);
+  const context = stateRecord.recentContext || {};
+  if (next.status === 'done') {
+    await savePersistedContext(stateRecord, { followup: next }, { stage: 'abandoned_waiting_document', pendingQuestion: false });
+    await chatwoot.createPrivateNoteByPhone(stateRecord.conversationId, buildWaitingDocumentAbandonedNote({ from: stateRecord.conversationId, name: context.name })).catch(() => null);
+    await conversationStore.logDecision({
+      conversationId: stateRecord.conversationId,
+      whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+      agentName: 'emy-financeiro',
+      decisionType: 'financeiro.followup_abandoned_waiting_document',
+      decision: { attempts: next.attempts, reason: next.reason },
+      requiresHuman: false,
+      confidence: 1,
+    }).catch(() => null);
+    return { action: 'abandoned_waiting_document' };
+  }
+
+  const message = buildWaitingDocumentFollowupMessage({ name: context.name, attempt: next.attempts });
+  const send = await evolution.sendTextHumanized({ to: stateRecord.conversationId, text: message, first: true });
+  await savePersistedContext(stateRecord, { followup: next }, { stage: 'awaiting_document', pendingQuestion: true });
+  await conversationStore.logDecision({
+    conversationId: stateRecord.conversationId,
+    whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+    agentName: 'emy-financeiro',
+    decisionType: 'financeiro.followup_waiting_document_sent',
+    decision: { attempts: next.attempts, sentToCustomer: send.sentToCustomer || false },
+    requiresHuman: false,
+    confidence: 1,
+  }).catch(() => null);
+  return { action: 'waiting_document_followup_sent', sent: send.sentToCustomer || false };
+}
+
+function invoiceIsPaid(invoice) {
+  return invoice?.status === 'pago' || Boolean(invoice?.paidAt) || Number(invoice?.paidAmount || 0) > 0;
+}
+
+async function processPaymentFollowup(stateRecord, followup) {
+  const invoice = followup.fatura ? await sgp.getInvoiceById(followup.fatura).catch(() => null) : null;
+  await conversationStore.logToolCall({
+    conversationId: stateRecord.conversationId,
+    whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+    toolName: 'sgp.getInvoiceById',
+    toolScope: 'read',
+    input: { fatura: followup.fatura },
+    output: { status: invoice?.status || null, paidAt: invoice?.paidAt || null, paidAmount: invoice?.paidAmount || null },
+    status: invoice ? 'success' : 'error',
+    errorMessage: invoice ? null : 'invoice_not_found',
+  }).catch(() => null);
+
+  if (invoiceIsPaid(invoice)) {
+    const done = { ...followup, status: 'done', completedAt: new Date().toISOString(), reason: 'payment_confirmed' };
+    const send = await evolution.sendTextHumanized({ to: stateRecord.conversationId, text: buildPaymentConfirmedMessage(), first: true });
+    await savePersistedContext(stateRecord, { followup: done }, { stage: 'payment_confirmed', pendingQuestion: false, safeToClose: true });
+    await chatwoot.createPrivateNoteByPhone(stateRecord.conversationId, `✅ Emy V2 Financeiro\n\nPagamento confirmado no SGP para a fatura ${followup.fatura}. A Emy avisou o cliente e marcou o follow-up como concluído.`).catch(() => null);
+    await conversationStore.logDecision({
+      conversationId: stateRecord.conversationId,
+      whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+      agentName: 'emy-financeiro',
+      decisionType: 'financeiro.payment_confirmed_followup',
+      decision: { fatura: followup.fatura, sentToCustomer: send.sentToCustomer || false },
+      requiresHuman: false,
+      confidence: 1,
+    }).catch(() => null);
+    return { action: 'payment_confirmed', sent: send.sentToCustomer || false };
+  }
+
+  const next = nextPaymentFollowup(followup, process.env);
+  let send = null;
+  if (next.status === 'done') {
+    const text = followup.type === FOLLOWUP_TYPES.PIX_SENT ? buildPixStillPendingMessage() : buildBoletoStillPendingMessage();
+    send = await evolution.sendTextHumanized({ to: stateRecord.conversationId, text, first: true });
+  }
+  await savePersistedContext(stateRecord, { followup: next }, { stage: stateRecord.stage, pendingQuestion: false });
+  await conversationStore.logDecision({
+    conversationId: stateRecord.conversationId,
+    whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+    agentName: 'emy-financeiro',
+    decisionType: next.status === 'done' ? 'financeiro.payment_pending_followup_sent' : 'financeiro.payment_pending_recheck_scheduled',
+    decision: { fatura: followup.fatura, attempts: next.attempts, nextAt: next.nextAt || null, sentToCustomer: send?.sentToCustomer || false },
+    requiresHuman: false,
+    confidence: 1,
+  }).catch(() => null);
+  return { action: next.status === 'done' ? 'payment_pending_followup_sent' : 'payment_recheck_scheduled', sent: send?.sentToCustomer || false };
+}
+
+export async function processFinanceFollowups({ now = new Date(), limit = 100 } = {}) {
+  const config = financeFollowupConfig(process.env);
+  if (!config.enabled || !conversationStore.enabled) return { ok: true, skipped: true, reason: 'followups_disabled_or_store_unavailable' };
+  if (followupRunnerBusy) return { ok: true, skipped: true, reason: 'followup_runner_busy' };
+  followupRunnerBusy = true;
+  const results = [];
+  try {
+    const states = await conversationStore.listFinanceConversationStates({ limit });
+    for (const state of states) {
+      const followup = state.recentContext?.followup;
+      if (!isFollowupDue(followup, now)) continue;
+      if (followup.type === FOLLOWUP_TYPES.WAITING_DOCUMENT) results.push(await processWaitingDocumentFollowup(state, followup));
+      else if ([FOLLOWUP_TYPES.PIX_SENT, FOLLOWUP_TYPES.BOLETO_SENT].includes(followup.type)) results.push(await processPaymentFollowup(state, followup));
+    }
+    return { ok: true, processed: results.length, results };
+  } finally {
+    followupRunnerBusy = false;
+  }
+}
+
+function startFinanceFollowupRunner() {
+  const config = financeFollowupConfig(process.env);
+  if (followupRunnerActive || !config.enabled) return;
+  followupRunnerActive = true;
+  setInterval(() => {
+    processFinanceFollowups().then((result) => {
+      if (result.processed) console.log(JSON.stringify({ event: 'finance_followups_processed', ...result, checked_at: new Date().toISOString() }));
+    }).catch((error) => console.error(JSON.stringify({ event: 'finance_followups_failed', error: error.message, checked_at: new Date().toISOString() })));
+  }, config.checkIntervalMs).unref?.();
 }
 
 export function createWhatsappTestServer() {
@@ -534,6 +687,7 @@ export function createWhatsappTestServer() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  startFinanceFollowupRunner();
   const server = createWhatsappTestServer();
   server.listen(PORT, () => {
     console.log(JSON.stringify({

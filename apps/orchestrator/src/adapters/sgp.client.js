@@ -104,6 +104,16 @@ export class SgpClient {
     };
   }
 
+  async getInvoiceById(invoiceId) {
+    const data = await this.postJson('/api/ura/titulos/', {
+      titulo_id: invoiceId,
+      limit: 1,
+      offset: 0,
+    });
+    const invoice = (data.titulos || []).map(normalizeInvoice)[0] || null;
+    return invoice;
+  }
+
   async getPaymentInfoByCpf(cpfcnpj) {
     const { pagination, invoices } = await this.listInvoicesByCpf(cpfcnpj, {
       status: 'abertos',
