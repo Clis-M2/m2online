@@ -89,6 +89,34 @@ function buildFinanceHandoffNote({ inbound, state, reason = 'boleto_antecipado' 
   ].filter(Boolean).join('\n');
 }
 
+function humanControlLabels(env = process.env) {
+  return String(env.CHATWOOT_HUMAN_CONTROL_LABELS || 'humano,ia_desligada')
+    .split(',')
+    .map((label) => label.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+async function getChatwootHumanControlStatus(phone) {
+  if (!chatwoot.enabled) return { blocked: false, skipped: true, reason: 'chatwoot_disabled' };
+  try {
+    const conversation = await chatwoot.findLatestConversationByPhone(phone);
+    if (!conversation?.id) return { blocked: false, skipped: true, reason: 'conversation_not_found' };
+    const labels = (conversation.labels || []).map((label) => String(label).toLowerCase());
+    const matchedLabel = labels.find((label) => humanControlLabels().includes(label));
+    return {
+      blocked: Boolean(matchedLabel),
+      reason: matchedLabel ? 'chatwoot_human_control_label' : 'no_human_control_label',
+      matchedLabel: matchedLabel || null,
+      conversationId: conversation.id,
+      displayId: conversation.display_id,
+      labels,
+    };
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'chatwoot_human_control_check_failed', error: error.message, phone, checked_at: new Date().toISOString() }));
+    return { blocked: false, skipped: true, reason: 'chatwoot_check_failed', error: error.message };
+  }
+}
+
 async function createChatwootHandoffNote(inbound, state) {
   try {
     const result = await chatwoot.createPrivateNoteByPhone(inbound.from, buildFinanceHandoffNote({ inbound, state }));
@@ -262,6 +290,19 @@ export async function handleInbound(payload) {
     return { ok: true, ignored: true, reason: 'sender_not_allowlisted', from: inbound.from };
   }
 
+  const initialHumanControl = await getChatwootHumanControlStatus(inbound.from);
+  if (initialHumanControl.blocked) {
+    console.log(JSON.stringify({
+      event: 'customer_reply_skipped_by_chatwoot_human_control',
+      from: inbound.from,
+      reason: initialHumanControl.reason,
+      matchedLabel: initialHumanControl.matchedLabel,
+      conversationId: initialHumanControl.conversationId,
+      checked_at: new Date().toISOString(),
+    }));
+    return { ok: true, ignored: true, reason: 'chatwoot_human_control_label', chatwoot: initialHumanControl };
+  }
+
   const inboundToken = inbound.messageId || `${Date.now()}-${Math.random()}`;
   latestInboundMessageBySender.set(inbound.from, inboundToken);
   let customerMessagesSent = 0;
@@ -270,7 +311,22 @@ export async function handleInbound(payload) {
       to: inbound.from,
       text,
       first: customerMessagesSent === 0,
-      shouldSend: () => latestInboundMessageBySender.get(inbound.from) === inboundToken,
+      shouldSend: async () => {
+        if (latestInboundMessageBySender.get(inbound.from) !== inboundToken) return false;
+        const humanControl = await getChatwootHumanControlStatus(inbound.from);
+        if (humanControl.blocked) {
+          console.log(JSON.stringify({
+            event: 'customer_reply_cancelled_by_chatwoot_human_control',
+            from: inbound.from,
+            reason: humanControl.reason,
+            matchedLabel: humanControl.matchedLabel,
+            conversationId: humanControl.conversationId,
+            checked_at: new Date().toISOString(),
+          }));
+          return false;
+        }
+        return true;
+      },
     });
     customerMessagesSent += 1;
     return result;

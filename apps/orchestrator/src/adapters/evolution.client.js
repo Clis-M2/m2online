@@ -77,8 +77,8 @@ export class EvolutionClient {
       presence = await this.sendPresence({ to, delayMs }).catch((error) => ({ ok: false, error: error.message }));
     }
     const waitedMs = await waitHumanized({ first, env: this.env });
-    if (shouldSend && !shouldSend()) {
-      return { sentToCustomer: false, mode: 'skipped_by_debounce', reason: 'newer_inbound_message_received', to: normalizeWhatsappNumber(to), waitedMs, typingPresence: presence, createdAt: new Date().toISOString() };
+    if (shouldSend && !(await shouldSend())) {
+      return { sentToCustomer: false, mode: 'skipped_by_debounce', reason: 'newer_inbound_message_received_or_human_control', to: normalizeWhatsappNumber(to), waitedMs, typingPresence: presence, createdAt: new Date().toISOString() };
     }
     const result = await this.sendText({ to, text });
     return { ...result, waitedMs, typingPresence: presence };
