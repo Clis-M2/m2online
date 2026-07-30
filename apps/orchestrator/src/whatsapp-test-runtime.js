@@ -58,8 +58,26 @@ const MAX_DOCUMENT_ATTEMPTS = Number(process.env.EMY_MAX_DOCUMENT_ATTEMPTS || DE
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
 const latestInboundMessageBySender = new Map();
+const recentOutboundTextBySender = new Map();
+const OUTBOUND_ECHO_TTL_MS = Number(process.env.EMY_OUTBOUND_ECHO_TTL_MS || 3 * 60 * 1000);
 let followupRunnerActive = false;
 let followupRunnerBusy = false;
+
+function normalizeComparableText(text = '') {
+  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function shouldIgnoreRecentOutboundEcho({ from, text, now = Date.now(), store = recentOutboundTextBySender, ttlMs = OUTBOUND_ECHO_TTL_MS } = {}) {
+  const recent = store.get(from);
+  if (!recent?.text || !text) return false;
+  if (now - Number(recent.at || 0) > ttlMs) return false;
+  return normalizeComparableText(recent.text) === normalizeComparableText(text);
+}
+
+function rememberOutboundText(to, text) {
+  if (!to || !text) return;
+  recentOutboundTextBySender.set(to, { text, at: Date.now() });
+}
 
 function summarizePayment(payment) {
   return {
@@ -286,6 +304,16 @@ export async function handleInbound(payload) {
     return { ok: true, ignored: true, reason: 'from_me_message' };
   }
 
+  if (shouldIgnoreRecentOutboundEcho({ from: inbound.from, text: inbound.text })) {
+    console.log(JSON.stringify({
+      event: 'outbound_echo_ignored',
+      from: inbound.from,
+      messageId: inbound.messageId || null,
+      checked_at: new Date().toISOString(),
+    }));
+    return { ok: true, ignored: true, reason: 'recent_outbound_echo' };
+  }
+
   if (!isAllowlistedWhatsappNumber(inbound.from, allowlistValue)) {
     return { ok: true, ignored: true, reason: 'sender_not_allowlisted', from: inbound.from };
   }
@@ -328,6 +356,7 @@ export async function handleInbound(payload) {
         return true;
       },
     });
+    if (result?.sentToCustomer) rememberOutboundText(inbound.from, text);
     customerMessagesSent += 1;
     return result;
   };
@@ -364,29 +393,29 @@ export async function handleInbound(payload) {
   }
 
   if (existingState?.stage === 'no_open_invoice' && isAnticipatedPaymentRequest(inbound.text)) {
-    const text = buildAnticipatedPaymentClientMessage({ name: existingState.name });
-    const send = await sendCustomerText(text);
+    const savedState = await saveConversationState(inbound, { ...existingState, stage: 'human_escalation_requested', followup: null });
     const internalAlert = await evolution.sendInternalText({
       to: process.env.FINANCE_HUMAN_GROUP_JID || '',
       text: buildAnticipatedPaymentInternalMessage({
-        name: existingState.name,
+        name: savedState.name,
         from: inbound.from,
-        document: existingState.document,
-        nextDueDate: existingState.nextInvoiceEstimate?.nextDueDate,
+        document: savedState.document,
+        nextDueDate: savedState.nextInvoiceEstimate?.nextDueDate,
       }),
     });
     console.log(JSON.stringify({
       event: 'finance_human_escalation_needed',
       reason: 'anticipated_payment_invoice_not_generated',
       from: inbound.from,
-      document: existingState.document,
-      nextDueDate: existingState.nextInvoiceEstimate?.nextDueDate || null,
+      document: savedState.document,
+      nextDueDate: savedState.nextInvoiceEstimate?.nextDueDate || null,
       internalAlertMode: internalAlert.mode,
       internalAlertSent: internalAlert.sentToInternalGroup || false,
       checked_at: new Date().toISOString(),
     }));
-    const savedState = await saveConversationState(inbound, { ...existingState, stage: 'human_escalation_requested' });
     const chatwootNote = await createChatwootHandoffNote(inbound, savedState);
+    const text = buildAnticipatedPaymentClientMessage({ name: savedState.name });
+    const send = await sendCustomerText(text);
     return { ok: true, classification: { area: 'financeiro', intent: 'anticipated_payment_human_escalation', confidence: 1 }, action: send, internalAlert, chatwootNote, requiresHuman: true };
   }
 
@@ -446,6 +475,7 @@ export async function handleInbound(payload) {
         documentAttempts: 0,
         nextInvoiceEstimate: payment.next_invoice_estimate,
         historicalContracts: payment.historical_contracts || [],
+        followup: null,
       });
       const text = buildNoOpenInvoiceMessage({
         name: pendingState.name,
@@ -531,6 +561,7 @@ export async function handleInbound(payload) {
       documentAttempts: 0,
       nextInvoiceEstimate: payment.next_invoice_estimate,
       historicalContracts: payment.historical_contracts || [],
+      followup: null,
     });
     const text = buildNoOpenInvoiceMessage({
       name: inbound.pushName,
