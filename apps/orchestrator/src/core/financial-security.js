@@ -25,6 +25,37 @@ export function incrementDocumentAttempts(state = {}, maxAttempts = DEFAULT_MAX_
   };
 }
 
+export function isDocumentWaitAcknowledgement(text = '') {
+  const normalized = String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  const patterns = [
+    /\b(ja|já)\s+(mando|envio|vou enviar|vou mandar|te mando|te envio)\b/,
+    /\b(vou|voce pode|pode)\s+(procurar|pegar|ver|confirmar|enviar|mandar)\b/,
+    /\b(pera|pera ai|perai|aguarda|aguarde|calma|um minuto|minutinho|so um instante|só um instante)\b/,
+    /\b(tinha esquecido|esqueci|vou procurar|estou procurando|to procurando|tô procurando)\b/,
+    /\b(claro|ok|certo|beleza|show|blz),?\s+(vou|ja|já)\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(normalized));
+}
+
+export function buildDocumentWaitAcknowledgementMessage({ name = '' } = {}) {
+  const prefix = name ? `${name}, tudo certo.` : 'Tudo certo.';
+  return `${prefix} Fico aguardando o CPF/CNPJ do titular para consultar com segurança.`;
+}
+
+export function handoffRecentlySent(state = {}, cooldownMs = 10 * 60 * 1000, now = new Date()) {
+  const sentAt = state.securityHandoffSentAt || state.humanEscalationSentAt;
+  if (!sentAt) return false;
+  const time = new Date(sentAt).getTime();
+  if (Number.isNaN(time)) return false;
+  return now.getTime() - time < cooldownMs;
+}
+
 export function buildDocumentAttemptMessage({ attempts, maxAttempts = DEFAULT_MAX_DOCUMENT_ATTEMPTS } = {}) {
   const remaining = Math.max(0, maxAttempts - Number(attempts || 0));
   if (remaining <= 0) {

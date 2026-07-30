@@ -36,12 +36,15 @@ import {
 } from './core/finance-followup.js';
 import {
   buildDocumentAttemptMessage,
+  buildDocumentWaitAcknowledgementMessage,
   buildExpiredDocumentMessage,
   buildSecurityHandoffMessage,
   DEFAULT_DOCUMENT_TTL_MS,
   DEFAULT_MAX_DOCUMENT_ATTEMPTS,
   documentValidationExpired,
+  handoffRecentlySent,
   incrementDocumentAttempts,
+  isDocumentWaitAcknowledgement,
 } from './core/financial-security.js';
 import { buildRouterClientMessage, buildRouterPrivateNote, classifyIntent } from './core/router.js';
 import { isAllowlistedWhatsappNumber, normalizeWhatsappNumber, parseAllowlist } from './core/safety.js';
@@ -55,6 +58,7 @@ const chatwoot = new ChatwootClient();
 const conversationStore = new SupabaseConversationStore();
 const DOCUMENT_TTL_MS = Number(process.env.EMY_DOCUMENT_VALIDATION_TTL_MS || DEFAULT_DOCUMENT_TTL_MS);
 const MAX_DOCUMENT_ATTEMPTS = Number(process.env.EMY_MAX_DOCUMENT_ATTEMPTS || DEFAULT_MAX_DOCUMENT_ATTEMPTS);
+const SECURITY_HANDOFF_COOLDOWN_MS = Number(process.env.EMY_SECURITY_HANDOFF_COOLDOWN_MS || 10 * 60 * 1000);
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
 const latestInboundMessageBySender = new Map();
@@ -194,6 +198,9 @@ function sanitizeConversationState(state = {}) {
     followup: state.followup,
     router: state.router,
     activeAgent: state.activeAgent,
+    securityReason: state.securityReason,
+    securityHandoffSentAt: state.securityHandoffSentAt,
+    humanEscalationSentAt: state.humanEscalationSentAt,
     startedAt: state.startedAt,
     updatedAt: state.updatedAt,
   };
@@ -270,9 +277,29 @@ async function auditToolCall(inbound, entry) {
 }
 
 async function escalateSecurityHandoff(inbound, state, reason, sendCustomerText) {
+  if (handoffRecentlySent(state, SECURITY_HANDOFF_COOLDOWN_MS)) {
+    const savedState = await saveConversationState(inbound, { ...(state || {}), stage: 'human_escalation_requested', securityBlocked: true, securityReason: reason });
+    await auditDecision(inbound, {
+      decisionType: 'financeiro.security_handoff_suppressed_by_cooldown',
+      decision: { reason, stage: savedState.stage, attempts: savedState.documentAttempts || 0, cooldownMs: SECURITY_HANDOFF_COOLDOWN_MS },
+      requiresHuman: true,
+      confidence: 1,
+    });
+    return { ok: true, classification: { area: 'financeiro', intent: 'security_handoff_suppressed', confidence: 1 }, ignored: true, reason: 'security_handoff_cooldown', requiresHuman: true };
+  }
+
   const text = buildSecurityHandoffMessage({ name: state?.name || inbound.pushName });
   const send = await sendCustomerText(text);
-  const savedState = await saveConversationState(inbound, { ...(state || {}), stage: 'human_escalation_requested', securityBlocked: true, securityReason: reason });
+  const sentAt = new Date().toISOString();
+  const savedState = await saveConversationState(inbound, {
+    ...(state || {}),
+    stage: 'human_escalation_requested',
+    securityBlocked: true,
+    securityReason: reason,
+    securityHandoffSentAt: sentAt,
+    humanEscalationSentAt: sentAt,
+    followup: null,
+  });
   await auditDecision(inbound, {
     decisionType: 'financeiro.security_handoff',
     decision: { reason, stage: savedState.stage, document: savedState.document || null, attempts: savedState.documentAttempts || 0 },
@@ -469,6 +496,24 @@ export async function handleInbound(payload) {
   const cpfcnpj = extractCpfCnpj(inbound.text);
 
   if (pendingState?.stage === 'awaiting_document' && !cpfcnpj) {
+    if (isDocumentWaitAcknowledgement(inbound.text)) {
+      const savedState = await saveConversationState(inbound, {
+        ...pendingState,
+        stage: 'awaiting_document',
+        lastDocumentWaitAcknowledgementAt: new Date().toISOString(),
+        followup: pendingState.followup || createWaitingDocumentFollowup(),
+      });
+      await auditDecision(inbound, {
+        decisionType: 'financeiro.document_wait_acknowledgement',
+        decision: { stage: savedState.stage, attempts: savedState.documentAttempts || 0, text: inbound.text.slice(0, 120) },
+        requiresHuman: false,
+        confidence: 1,
+      });
+      const text = buildDocumentWaitAcknowledgementMessage({ name: savedState.name || inbound.pushName });
+      const send = await sendCustomerText(text);
+      return { ok: true, classification: { area: 'financeiro', intent: 'document_wait_acknowledgement', confidence: 1 }, needsDocument: true, action: send };
+    }
+
     const attempt = incrementDocumentAttempts(pendingState, MAX_DOCUMENT_ATTEMPTS);
     const savedState = await saveConversationState(inbound, { ...pendingState, documentAttempts: attempt.attempts, securityBlocked: attempt.blocked });
     await auditDecision(inbound, {
