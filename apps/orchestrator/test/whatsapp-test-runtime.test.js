@@ -8,7 +8,7 @@ import {
   buildPaymentLinkMessage,
   buildPixMessage,
 } from '../src/core/payment-message.js';
-import { extractEvolutionMessage, shouldIgnoreRecentOutboundEcho } from '../src/whatsapp-test-runtime.js';
+import { extractEvolutionMessage, shouldIgnoreRecentInboundDuplicate, shouldIgnoreRecentOutboundEcho } from '../src/whatsapp-test-runtime.js';
 
 test('extractCpfCnpj extracts formatted CPF from financial message', () => {
   assert.equal(extractCpfCnpj('quero boleto do CPF 031.346.044-26'), '03134604426');
@@ -49,6 +49,36 @@ test('extractEvolutionMessage detects fromMe messages to prevent self-reply loop
 
   assert.equal(inbound.from, '5581920016907');
   assert.equal(inbound.fromMe, true);
+});
+
+test('shouldIgnoreRecentInboundDuplicate blocks repeated inbound text briefly', () => {
+  const store = new Map([
+    ['558181956964', { text: 'quero falar sobre pagamento', at: 1000 }],
+  ]);
+
+  assert.equal(shouldIgnoreRecentInboundDuplicate({
+    from: '558181956964',
+    text: 'Quero falar sobre pagamento',
+    now: 2000,
+    store,
+    ttlMs: 3000,
+  }), true);
+
+  assert.equal(shouldIgnoreRecentInboundDuplicate({
+    from: '558181956964',
+    text: 'Quero falar sobre suporte',
+    now: 2000,
+    store,
+    ttlMs: 3000,
+  }), false);
+
+  assert.equal(shouldIgnoreRecentInboundDuplicate({
+    from: '558181956964',
+    text: 'Quero falar sobre pagamento',
+    now: 10000,
+    store,
+    ttlMs: 3000,
+  }), false);
 });
 
 test('shouldIgnoreRecentOutboundEcho blocks recent echoed outbound text', () => {

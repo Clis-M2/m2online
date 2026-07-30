@@ -63,12 +63,27 @@ const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
 const latestInboundMessageBySender = new Map();
 const recentOutboundTextBySender = new Map();
+const recentInboundTextBySender = new Map();
 const OUTBOUND_ECHO_TTL_MS = Number(process.env.EMY_OUTBOUND_ECHO_TTL_MS || 3 * 60 * 1000);
+const INBOUND_DUPLICATE_TTL_MS = Number(process.env.EMY_INBOUND_DUPLICATE_TTL_MS || 2 * 60 * 1000);
 let followupRunnerActive = false;
 let followupRunnerBusy = false;
 
 function normalizeComparableText(text = '') {
   return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function shouldIgnoreRecentInboundDuplicate({ from, text, now = Date.now(), store = recentInboundTextBySender, ttlMs = INBOUND_DUPLICATE_TTL_MS } = {}) {
+  const recent = store.get(from);
+  const normalized = normalizeComparableText(text);
+  if (!recent?.text || !normalized) return false;
+  if (now - Number(recent.at || 0) > ttlMs) return false;
+  return recent.text === normalized;
+}
+
+function rememberInboundText(from, text) {
+  if (!from || !text) return;
+  recentInboundTextBySender.set(from, { text: normalizeComparableText(text), at: Date.now() });
 }
 
 export function shouldIgnoreRecentOutboundEcho({ from, text, now = Date.now(), store = recentOutboundTextBySender, ttlMs = OUTBOUND_ECHO_TTL_MS } = {}) {
@@ -99,6 +114,25 @@ function summarizePayment(payment) {
     has_link_pagamento: Boolean(payment.link_pagamento),
     has_boleto_link: Boolean(payment.boleto_link),
   };
+}
+
+function looksLikeFinanceText(text = '') {
+  return /\b(financeiro|pagamento|pagar|boleto|pix|fatura|mensalidade|vencimento|cobran[cç]a|debito|d[eé]bito|comprovante)\b/i.test(String(text || ''));
+}
+
+function buildRouterHumanInternalMessage({ inbound, classification }) {
+  return [
+    '🧭 Emy V2 Orquestradora — atendimento humano solicitado',
+    '',
+    `Área provável: ${looksLikeFinanceText(inbound.text) ? 'financeiro' : classification.area || 'humano'}`,
+    `Intenção: ${classification.intent || 'human_requested'}`,
+    `Confiança: ${classification.confidence ?? 'n/a'}`,
+    `WhatsApp: ${inbound.from}`,
+    `Cliente: ${inbound.pushName || 'não informado'}`,
+    `Resumo: ${classification.handoff?.resumo || inbound.text || 'não informado'}`,
+    '',
+    'Ação recomendada: assumir a conversa no Chatwoot ou aplicar etiqueta humano/ia_desligada se ainda não estiver aplicada.',
+  ].filter(Boolean).join('\n');
 }
 
 function buildFinanceHandoffNote({ inbound, state, reason = 'boleto_antecipado' }) {
@@ -371,6 +405,17 @@ export async function handleInbound(payload) {
     return { ok: true, ignored: true, reason: 'sender_not_allowlisted', from: inbound.from };
   }
 
+  if (shouldIgnoreRecentInboundDuplicate({ from: inbound.from, text: inbound.text })) {
+    console.log(JSON.stringify({
+      event: 'inbound_duplicate_ignored',
+      from: inbound.from,
+      messageId: inbound.messageId || null,
+      checked_at: new Date().toISOString(),
+    }));
+    return { ok: true, ignored: true, reason: 'recent_inbound_duplicate' };
+  }
+  rememberInboundText(inbound.from, inbound.text);
+
   const initialHumanControl = await getChatwootHumanControlStatus(inbound.from);
   if (initialHumanControl.blocked) {
     console.log(JSON.stringify({
@@ -608,9 +653,24 @@ export async function handleInbound(payload) {
       followup: null,
     });
     const chatwootNote = await createChatwootRouterNote(inbound, classification);
+    let internalAlert = null;
+    if (classification.requiresHuman && looksLikeFinanceText(inbound.text)) {
+      internalAlert = await evolution.sendInternalText({
+        to: process.env.FINANCE_HUMAN_GROUP_JID || '',
+        text: buildRouterHumanInternalMessage({ inbound, classification }),
+      });
+      console.log(JSON.stringify({
+        event: 'router_human_internal_alert_sent',
+        from: inbound.from,
+        area: 'financeiro',
+        internalAlertMode: internalAlert.mode,
+        internalAlertSent: internalAlert.sentToInternalGroup || false,
+        checked_at: new Date().toISOString(),
+      }));
+    }
     const text = buildRouterClientMessage(classification, { name: savedState.name || inbound.pushName });
     const send = await sendCustomerText(text);
-    return { ok: true, classification, action: send, chatwootNote, requiresHuman: classification.requiresHuman };
+    return { ok: true, classification, action: send, chatwootNote, internalAlert, requiresHuman: classification.requiresHuman };
   }
 
   if (!cpfcnpj) {

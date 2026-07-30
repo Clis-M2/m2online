@@ -29,6 +29,15 @@ test('router classifies commercial request', () => {
   assert.equal(result.intent, 'coverage_check');
 });
 
+test('router sends payment conversation to finance instead of false human', () => {
+  const result = classifyIntent('Quero falar sobre pagamento');
+
+  assert.equal(result.area, 'financeiro');
+  assert.equal(result.activeAgent, 'emy-financeiro');
+  assert.equal(result.intent, 'financial_request');
+  assert.equal(result.requiresHuman, false);
+});
+
 test('router escalates explicit human request', () => {
   const result = classifyIntent('Quero falar com um atendente humano agora');
 

@@ -41,8 +41,8 @@ const TERMS = {
     'viabilidade', 'tem fibra', 'internet para minha casa', 'quero ser cliente', 'novo cliente', 'mudar plano', 'upgrade', 'downgrade',
   ],
   pedidoHumano: [
-    'atendente', 'humano', 'pessoa', 'falar com alguem', 'falar com alguém', 'me liga', 'ligacao', 'ligação', 'quero falar',
-    'supervisor', 'gerente', 'responsavel', 'responsável', 'suporte humano',
+    'atendente', 'humano', 'pessoa', 'falar com atendente', 'falar com uma pessoa', 'falar com alguem', 'falar com alguém',
+    'me liga', 'ligacao', 'ligação', 'supervisor', 'gerente', 'responsavel', 'responsável', 'suporte humano',
   ],
   reclamacao: [
     'reclamar', 'reclamacao', 'reclamação', 'absurdo', 'insatisfeito', 'insatisfeita', 'chateado', 'chateada', 'raiva',
