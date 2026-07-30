@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { EvolutionClient } from './adapters/evolution.client.js';
 import { buildPaymentResponse, SgpClient } from './adapters/sgp.client.js';
+import { SupabaseConversationStore } from './adapters/supabase.client.js';
 import { extractCpfCnpj, maskDocument } from './core/document.js';
 import { loadEnvFile } from './core/env.js';
 import {
@@ -26,6 +27,7 @@ loadEnvFile();
 const PORT = Number(process.env.EMY_TEST_PORT || 3333);
 const sgp = new SgpClient();
 const evolution = new EvolutionClient();
+const conversationStore = new SupabaseConversationStore();
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
 
@@ -40,6 +42,62 @@ function summarizePayment(payment) {
     has_link_pagamento: Boolean(payment.link_pagamento),
     has_boleto_link: Boolean(payment.boleto_link),
   };
+}
+
+function sanitizeConversationState(state = {}) {
+  return {
+    stage: state.stage,
+    requestType: state.requestType,
+    tone: state.tone,
+    name: state.name,
+    document: state.document,
+    nextInvoiceEstimate: state.nextInvoiceEstimate,
+    historicalContracts: state.historicalContracts,
+    paymentSummary: state.payment ? summarizePayment(state.payment) : state.paymentSummary,
+    startedAt: state.startedAt,
+    updatedAt: state.updatedAt,
+  };
+}
+
+async function loadConversationState(inbound) {
+  const localState = conversationStateBySender.get(inbound.from);
+  if (!conversationStore.enabled) return localState;
+  try {
+    const persisted = await conversationStore.getConversationState({
+      conversationId: inbound.from,
+      whatsappInstance: process.env.EVOLUTION_INSTANCE || 'CLIS',
+    });
+    if (!persisted) return localState;
+    const state = { ...(persisted.recentContext || {}), stage: persisted.stage || persisted.recentContext?.stage };
+    conversationStateBySender.set(inbound.from, state);
+    return state;
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'supabase_conversation_state_load_failed', error: error.message, from: inbound.from, checked_at: new Date().toISOString() }));
+    return localState;
+  }
+}
+
+async function saveConversationState(inbound, state) {
+  const updatedState = { ...state, updatedAt: new Date().toISOString() };
+  conversationStateBySender.set(inbound.from, updatedState);
+  if (!conversationStore.enabled) return updatedState;
+  try {
+    await conversationStore.upsertConversationState({
+      conversationId: inbound.from,
+      whatsappInstance: process.env.EVOLUTION_INSTANCE || 'CLIS',
+      from: inbound.from,
+      area: 'financeiro',
+      intent: updatedState.requestType || null,
+      stage: updatedState.stage,
+      activeAgent: 'emy-financeiro',
+      pendingQuestion: updatedState.stage === 'awaiting_document',
+      recentContext: sanitizeConversationState(updatedState),
+      safeToClose: false,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'supabase_conversation_state_save_failed', error: error.message, from: inbound.from, stage: updatedState.stage, checked_at: new Date().toISOString() }));
+  }
+  return updatedState;
 }
 
 function readJson(req) {
@@ -95,7 +153,7 @@ export async function handleInbound(payload) {
   }
 
   const optionText = inbound.text.toLowerCase().trim();
-  const existingState = conversationStateBySender.get(inbound.from);
+  const existingState = await loadConversationState(inbound);
   if (existingState?.stage === 'no_open_invoice' && isAnticipatedPaymentRequest(inbound.text)) {
     const text = buildAnticipatedPaymentClientMessage({ name: existingState.name });
     const send = await evolution.sendText({ to: inbound.from, text });
@@ -118,7 +176,7 @@ export async function handleInbound(payload) {
       internalAlertSent: internalAlert.sentToInternalGroup || false,
       checked_at: new Date().toISOString(),
     }));
-    conversationStateBySender.set(inbound.from, { ...existingState, stage: 'human_escalation_requested', updatedAt: new Date().toISOString() });
+    await saveConversationState(inbound, { ...existingState, stage: 'human_escalation_requested' });
     return { ok: true, classification: { area: 'financeiro', intent: 'anticipated_payment_human_escalation', confidence: 1 }, action: send, internalAlert, requiresHuman: true };
   }
 
@@ -132,20 +190,19 @@ export async function handleInbound(payload) {
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: send };
   }
 
-  const pendingState = conversationStateBySender.get(inbound.from);
+  const pendingState = existingState;
   const cpfcnpj = extractCpfCnpj(inbound.text);
 
   if (pendingState?.stage === 'awaiting_document' && cpfcnpj) {
     const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
     const payment = buildPaymentResponse(paymentInfo);
     if (!payment.fatura) {
-      conversationStateBySender.set(inbound.from, {
+      await saveConversationState(inbound, {
         ...pendingState,
         stage: 'no_open_invoice',
         document: maskDocument(cpfcnpj),
         nextInvoiceEstimate: payment.next_invoice_estimate,
         historicalContracts: payment.historical_contracts || [],
-        updatedAt: new Date().toISOString(),
       });
       const text = buildNoOpenInvoiceMessage({
         name: pendingState.name,
@@ -157,12 +214,11 @@ export async function handleInbound(payload) {
       return { ok: true, classification: { area: 'financeiro', intent: 'no_open_invoice', confidence: 1 }, document: maskDocument(cpfcnpj), action: send };
     }
     lastPaymentBySender.set(inbound.from, payment);
-    conversationStateBySender.set(inbound.from, {
+    await saveConversationState(inbound, {
       ...pendingState,
       stage: 'payment_returned',
       document: maskDocument(cpfcnpj),
       payment,
-      updatedAt: new Date().toISOString(),
     });
 
     const messages = [
@@ -195,13 +251,12 @@ export async function handleInbound(payload) {
   if (!cpfcnpj) {
     const request = detectFinancialRequest(inbound.text);
     const tone = detectTone(inbound.text);
-    conversationStateBySender.set(inbound.from, {
+    await saveConversationState(inbound, {
       stage: 'awaiting_document',
       requestType: request.type,
       tone,
       name: inbound.pushName,
       startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     });
     const text = buildCpfRequestMessage({ name: inbound.pushName, tone });
     const send = await evolution.sendText({ to: inbound.from, text });
@@ -212,7 +267,7 @@ export async function handleInbound(payload) {
   const payment = buildPaymentResponse(paymentInfo);
   const request = detectFinancialRequest(inbound.text);
   if (!payment.fatura) {
-    conversationStateBySender.set(inbound.from, {
+    await saveConversationState(inbound, {
       stage: 'no_open_invoice',
       requestType: request.type,
       tone: detectTone(inbound.text),
@@ -220,7 +275,6 @@ export async function handleInbound(payload) {
       document: maskDocument(cpfcnpj),
       nextInvoiceEstimate: payment.next_invoice_estimate,
       historicalContracts: payment.historical_contracts || [],
-      updatedAt: new Date().toISOString(),
     });
     const text = buildNoOpenInvoiceMessage({
       name: inbound.pushName,
@@ -232,14 +286,13 @@ export async function handleInbound(payload) {
     return { ok: true, classification: { ...classification, intent: 'no_open_invoice' }, document: maskDocument(cpfcnpj), action: send };
   }
   lastPaymentBySender.set(inbound.from, payment);
-  conversationStateBySender.set(inbound.from, {
+  await saveConversationState(inbound, {
     stage: 'payment_returned',
     requestType: request.type,
     tone: detectTone(inbound.text),
     name: inbound.pushName,
     document: maskDocument(cpfcnpj),
     payment,
-    updatedAt: new Date().toISOString(),
   });
   const messages = [
     buildFoundInvoiceMessage({ name: inbound.pushName, payment, requestType: request.type }),
