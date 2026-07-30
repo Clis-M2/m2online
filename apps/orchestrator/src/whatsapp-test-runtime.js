@@ -619,6 +619,41 @@ async function savePersistedContext(stateRecord, recentContextPatch, patch = {})
   });
 }
 
+async function suppressFollowupByHumanControl(stateRecord, followup, humanControl) {
+  const done = {
+    ...followup,
+    status: 'done',
+    completedAt: new Date().toISOString(),
+    reason: 'chatwoot_human_control_label',
+    matchedLabel: humanControl.matchedLabel || null,
+  };
+  await savePersistedContext(stateRecord, { followup: done }, { stage: stateRecord.stage, pendingQuestion: false });
+  await conversationStore.logDecision({
+    conversationId: stateRecord.conversationId,
+    whatsappInstance: stateRecord.whatsappInstance || process.env.EVOLUTION_INSTANCE || 'CLIS',
+    agentName: 'emy-financeiro',
+    decisionType: 'financeiro.followup_skipped_by_chatwoot_human_control',
+    decision: {
+      followupType: followup.type,
+      reason: humanControl.reason,
+      matchedLabel: humanControl.matchedLabel || null,
+      conversationId: humanControl.conversationId || null,
+    },
+    requiresHuman: true,
+    confidence: 1,
+  }).catch(() => null);
+  console.log(JSON.stringify({
+    event: 'finance_followup_skipped_by_chatwoot_human_control',
+    from: stateRecord.conversationId,
+    followupType: followup.type,
+    reason: humanControl.reason,
+    matchedLabel: humanControl.matchedLabel || null,
+    conversationId: humanControl.conversationId || null,
+    checked_at: new Date().toISOString(),
+  }));
+  return { action: 'followup_skipped_by_chatwoot_human_control', sent: false };
+}
+
 async function processWaitingDocumentFollowup(stateRecord, followup) {
   const next = nextWaitingDocumentFollowup(followup, process.env);
   const context = stateRecord.recentContext || {};
@@ -716,6 +751,11 @@ export async function processFinanceFollowups({ now = new Date(), limit = 100 } 
     for (const state of states) {
       const followup = state.recentContext?.followup;
       if (!isFollowupDue(followup, now)) continue;
+      const humanControl = await getChatwootHumanControlStatus(state.conversationId);
+      if (humanControl.blocked) {
+        results.push(await suppressFollowupByHumanControl(state, followup, humanControl));
+        continue;
+      }
       if (followup.type === FOLLOWUP_TYPES.WAITING_DOCUMENT) results.push(await processWaitingDocumentFollowup(state, followup));
       else if ([FOLLOWUP_TYPES.PIX_SENT, FOLLOWUP_TYPES.BOLETO_SENT].includes(followup.type)) results.push(await processPaymentFollowup(state, followup));
     }
