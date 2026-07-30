@@ -71,9 +71,11 @@ test('messagesForRequestType returns channels for each open invoice', () => {
   assert.equal(messagesForRequestType({ payment, requestType: 'payment_general', builders: { pix: buildPixMessage, link: buildPaymentLinkMessage } }).length, 4);
 });
 
-test('isAnticipatedPaymentRequest detects customer insistence to pay early', () => {
+test('isAnticipatedPaymentRequest detects customer natural replies to pay early', () => {
   assert.equal(isAnticipatedPaymentRequest('quero pagar antecipado mesmo assim'), true);
   assert.equal(isAnticipatedPaymentRequest('pode gerar o boleto'), true);
+  assert.equal(isAnticipatedPaymentRequest('sim quero pagar antes'), true);
+  assert.equal(isAnticipatedPaymentRequest('recebi hoje e quero pagar'), true);
 });
 
 test('buildNoOpenInvoiceMessage explains invoice not generated when due date is far', () => {
@@ -81,7 +83,7 @@ test('buildNoOpenInvoiceMessage explains invoice not generated when due date is 
   assert.match(text, /localizei seu cadastro/);
   assert.match(text, /mais de um contrato/);
   assert.match(text, /só gera a fatura 15 dias antes/);
-  assert.match(text, /quero pagar antecipado/);
+  assert.match(text, /me sinaliza por aqui/);
 });
 
 test('buildNoOpenInvoiceMessage does not invent invoice when estimate is weak', () => {

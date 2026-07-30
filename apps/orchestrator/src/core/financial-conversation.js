@@ -1,5 +1,5 @@
 export function isAnticipatedPaymentRequest(text = '') {
-  return /antecipad|antes do vencimento|gerar (o )?boleto|gera (o )?boleto|quero pagar mesmo assim|mesmo assim|adiantar|adiantado/i.test(String(text || ''));
+  return /antecipad|antes do vencimento|antes\b|gerar (o )?boleto|gera (o )?boleto|pode gerar|quero pagar|pagar antes|pago antes|recebi hoje|sim[, ]*(quero|pode)|mesmo assim|adiantar|adiantado/i.test(String(text || ''));
 }
 
 export function detectFinancialRequest(text = '') {

@@ -67,7 +67,7 @@ export function buildNoOpenInvoiceMessage({ name = '', nextDueDate = '', daysUnt
       `O próximo vencimento estimado é ${formatDateBr(nextDueDate)}.`,
       'Como o sistema só gera a fatura 15 dias antes do vencimento, ela provavelmente ainda não foi gerada.',
       '',
-      'Se você quiser pagar antecipado mesmo assim, me diga “quero pagar antecipado” que eu aviso a equipe para gerar o boleto para você.',
+      'Se você quiser pagar antecipado mesmo assim, me sinaliza por aqui que eu aviso a equipe para gerar o boleto para você.',
     ].filter((line) => line !== '').join('\n');
   }
 
@@ -76,7 +76,7 @@ export function buildNoOpenInvoiceMessage({ name = '', nextDueDate = '', daysUnt
     contractLine,
     '',
     'Para não te passar uma informação errada, não vou gerar nenhum link ou Pix sem uma fatura disponível no sistema.',
-    'Se você quiser pagar antecipado, me diga “quero pagar antecipado” que eu aviso a equipe para gerar o boleto para você.',
+    'Se você quiser pagar antecipado, me sinaliza por aqui que eu aviso a equipe para gerar o boleto para você.',
   ].filter((line) => line !== '').join('\n');
 }
 

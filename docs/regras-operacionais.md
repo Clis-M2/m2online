@@ -31,7 +31,7 @@ Fluxo esperado:
 
 Mensagem-base ao cliente quando não houver fatura:
 
-> Consultei aqui e não encontrei fatura em aberto no momento. Como ainda faltam mais de 15 dias para o próximo vencimento, é provável que essa fatura ainda não tenha sido gerada pelo sistema. Se você quiser pagar antecipado mesmo assim, me diga “quero pagar antecipado” que eu aviso a equipe para gerar o boleto para você.
+> Consultei aqui e não encontrei fatura em aberto no momento. Como ainda faltam mais de 15 dias para o próximo vencimento, é provável que essa fatura ainda não tenha sido gerada pelo sistema. Se você quiser pagar antecipado mesmo assim, me sinaliza por aqui que eu aviso a equipe para gerar o boleto para você.
 
 Mensagem-base ao cliente quando ele insistir no pagamento antecipado:
 
