@@ -39,6 +39,18 @@ Mensagem-base ao cliente quando ele insistir no pagamento antecipado:
 
 Pendência operacional: configurar `FINANCE_HUMAN_GROUP_JID` e habilitar `FINANCE_HUMAN_ESCALATION_ENABLED=true` somente após Clistenis confirmar o grupo correto.
 
+### Ritmo humano de resposta no WhatsApp
+
+Decisão de Clistenis em 2026-07-30: a Emy não deve responder de forma instantânea no WhatsApp, porque isso assusta o cliente e pode interromper quem ainda está escrevendo ou enviando áudio.
+
+Regras implementadas:
+
+- Primeira resposta ao cliente: aguardar entre 20 e 30 segundos (`EMY_FIRST_RESPONSE_DELAY_MIN_MS=20000`, `EMY_FIRST_RESPONSE_DELAY_MAX_MS=30000`).
+- Mensagens separadas na mesma resposta: aguardar 5 segundos entre elas (`EMY_BETWEEN_MESSAGES_DELAY_MS=5000`).
+- Se o cliente enviar outra mensagem durante a espera, a resposta antiga é cancelada por debounce e a Emy processa a mensagem mais recente.
+- Presença “digitando” deve ser enviada quando suportada pela Evolution API (`EMY_TYPING_PRESENCE_ENABLED=true`), mas é best-effort: se o endpoint não responder, o envio da mensagem não pode falhar por causa disso.
+- Alertas internos para grupo da equipe não precisam seguir esse atraso humano; são operacionais.
+
 ### Segurança financeira e validação de identidade
 
 Decisão de segurança: a validação de CPF/CNPJ no atendimento financeiro não é permanente.
