@@ -3,9 +3,9 @@ import { EvolutionClient } from './adapters/evolution.client.js';
 import { buildPaymentResponse, SgpClient } from './adapters/sgp.client.js';
 import { extractCpfCnpj, maskDocument } from './core/document.js';
 import { loadEnvFile } from './core/env.js';
-import { buildCustomerPaymentMessage } from './core/payment-message.js';
+import { buildCustomerPaymentMessages } from './core/payment-message.js';
 import { classifyIntent } from './core/router.js';
-import { normalizeWhatsappNumber, parseAllowlist } from './core/safety.js';
+import { isAllowlistedWhatsappNumber, normalizeWhatsappNumber, parseAllowlist } from './core/safety.js';
 
 loadEnvFile();
 
@@ -51,7 +51,7 @@ export function extractEvolutionMessage(payload) {
 
 export async function handleInbound(payload) {
   const inbound = extractEvolutionMessage(payload);
-  const allowlist = parseAllowlist(process.env.EMY_TEST_WHATSAPP_ALLOWLIST || '');
+  const allowlistValue = process.env.EMY_TEST_WHATSAPP_ALLOWLIST || '';
 
   if (!inbound.from || !inbound.text) {
     return { ok: true, ignored: true, reason: 'empty_or_unsupported_message' };
@@ -61,7 +61,7 @@ export async function handleInbound(payload) {
     return { ok: true, ignored: true, reason: 'from_me_message' };
   }
 
-  if (!allowlist.includes(inbound.from)) {
+  if (!isAllowlistedWhatsappNumber(inbound.from, allowlistValue)) {
     return { ok: true, ignored: true, reason: 'sender_not_allowlisted', from: inbound.from };
   }
 
@@ -81,8 +81,11 @@ export async function handleInbound(payload) {
 
   const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
   const payment = buildPaymentResponse(paymentInfo);
-  const text = buildCustomerPaymentMessage(payment);
-  const send = await evolution.sendText({ to: inbound.from, text });
+  const messages = buildCustomerPaymentMessages(payment);
+  const sends = [];
+  for (const text of messages) {
+    sends.push(await evolution.sendText({ to: inbound.from, text }));
+  }
 
   return {
     ok: true,
@@ -98,7 +101,8 @@ export async function handleInbound(payload) {
       has_link_pagamento: Boolean(payment.link_pagamento),
       has_boleto_link: Boolean(payment.boleto_link),
     },
-    action: send,
+    action: sends.at(-1),
+    actions: sends,
   };
 }
 
@@ -121,6 +125,7 @@ export function createWhatsappTestServer() {
         reason: result.reason || result.action?.reason || null,
         area: result.classification?.area || null,
         sentToCustomer: result.action?.sentToCustomer || false,
+        messagesSent: Array.isArray(result.actions) ? result.actions.filter((item) => item.sentToCustomer).length : (result.action?.sentToCustomer ? 1 : 0),
         to: result.action?.to || result.from || null,
         checked_at: new Date().toISOString(),
       }));

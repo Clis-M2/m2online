@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { extractCpfCnpj, maskDocument } from '../src/core/document.js';
-import { assertSafeOutbound } from '../src/core/safety.js';
-import { buildCustomerPaymentMessage } from '../src/core/payment-message.js';
+import { assertSafeOutbound, isAllowlistedWhatsappNumber, whatsappNumberVariants } from '../src/core/safety.js';
+import { buildCustomerPaymentMessage, buildCustomerPaymentMessages } from '../src/core/payment-message.js';
 import { extractEvolutionMessage } from '../src/whatsapp-test-runtime.js';
 
 test('extractCpfCnpj extracts formatted CPF from financial message', () => {
@@ -19,6 +19,12 @@ test('assertSafeOutbound blocks when allowlist is empty or recipient differs', (
     allowed: false,
     reason: 'recipient_not_allowlisted',
   });
+});
+
+test('whatsappNumberVariants normalizes Brazilian mobile with and without 9th digit', () => {
+  assert.deepEqual(new Set(whatsappNumberVariants('5581981956964')), new Set(['5581981956964', '558181956964']));
+  assert.equal(isAllowlistedWhatsappNumber('558181956964', '5581981956964'), true);
+  assert.equal(isAllowlistedWhatsappNumber('5581981956964', '558181956964'), true);
 });
 
 test('assertSafeOutbound allows only test allowlisted recipient with auto send enabled', () => {
@@ -40,8 +46,8 @@ test('extractEvolutionMessage detects fromMe messages to prevent self-reply loop
   assert.equal(inbound.fromMe, true);
 });
 
-test('buildCustomerPaymentMessage includes payment channels when available', () => {
-  const text = buildCustomerPaymentMessage({
+test('buildCustomerPaymentMessages separates summary and payment channels', () => {
+  const messages = buildCustomerPaymentMessages({
     contrato: 12044,
     fatura: 160368,
     valor_atual: 130.25,
@@ -52,9 +58,19 @@ test('buildCustomerPaymentMessage includes payment channels when available', () 
     boleto_link: 'https://example.invalid/boleto',
   });
 
-  assert.match(text, /contrato 12044/);
-  assert.match(text, /PIX copia e cola/);
-  assert.match(text, /Linha digitável/);
-  assert.match(text, /Link de pagamento/);
-  assert.match(text, /Boleto/);
+  assert.equal(messages.length, 6);
+  assert.match(messages[0], /Contrato: 12044/);
+  assert.match(messages[1], /QRCode \/ Link de pagamento/);
+  assert.match(messages[2], /Código PIX copia e cola/);
+  assert.match(messages[3], /Linha digitável do boleto/);
+  assert.match(messages[4], /Boleto em PDF\/link/);
+
+  const text = buildCustomerPaymentMessage({
+    contrato: 12044,
+    fatura: 160368,
+    valor_atual: 130.25,
+    vencimento_atual: '2026-04-25',
+    pix_copia_cola: 'pix',
+  });
+  assert.match(text, /Código PIX copia e cola/);
 });
