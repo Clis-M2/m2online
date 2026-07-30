@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { ChatwootClient } from './adapters/chatwoot.client.js';
 import { EvolutionClient } from './adapters/evolution.client.js';
 import { buildPaymentResponse, SgpClient } from './adapters/sgp.client.js';
 import { SupabaseConversationStore } from './adapters/supabase.client.js';
@@ -27,6 +28,7 @@ loadEnvFile();
 const PORT = Number(process.env.EMY_TEST_PORT || 3333);
 const sgp = new SgpClient();
 const evolution = new EvolutionClient();
+const chatwoot = new ChatwootClient();
 const conversationStore = new SupabaseConversationStore();
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
@@ -42,6 +44,40 @@ function summarizePayment(payment) {
     has_link_pagamento: Boolean(payment.link_pagamento),
     has_boleto_link: Boolean(payment.boleto_link),
   };
+}
+
+function buildFinanceHandoffNote({ inbound, state, reason = 'boleto_antecipado' }) {
+  return [
+    '🧾 Nota Emy V2 Financeiro',
+    '',
+    `Motivo: ${reason === 'boleto_antecipado' ? 'cliente quer pagar antecipado; fatura não está aberta/gerada no SGP' : reason}`,
+    `WhatsApp: ${inbound.from}`,
+    `Cliente: ${state.name || inbound.pushName || 'não informado'}`,
+    `Documento: ${state.document || 'não informado'}`,
+    state.historicalContracts?.length ? `Contratos identificados no CPF: ${state.historicalContracts.join(', ')}` : '',
+    state.nextInvoiceEstimate?.nextDueDate ? `Próximo vencimento estimado: ${state.nextInvoiceEstimate.nextDueDate}` : '',
+    '',
+    'Ação da Emy: informou o cliente e acionou o grupo Suporte FINANCEIRO💰💳 para geração manual do boleto, se aplicável.',
+  ].filter(Boolean).join('\n');
+}
+
+async function createChatwootHandoffNote(inbound, state) {
+  try {
+    const result = await chatwoot.createPrivateNoteByPhone(inbound.from, buildFinanceHandoffNote({ inbound, state }));
+    console.log(JSON.stringify({
+      event: 'chatwoot_private_note_result',
+      ok: result?.ok || false,
+      skipped: result?.skipped || false,
+      reason: result?.reason || null,
+      conversationId: result?.conversationId || null,
+      noteId: result?.noteId || null,
+      checked_at: new Date().toISOString(),
+    }));
+    return result;
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'chatwoot_private_note_failed', error: error.message, from: inbound.from, checked_at: new Date().toISOString() }));
+    return { ok: false, error: error.message };
+  }
 }
 
 function sanitizeConversationState(state = {}) {
@@ -176,8 +212,9 @@ export async function handleInbound(payload) {
       internalAlertSent: internalAlert.sentToInternalGroup || false,
       checked_at: new Date().toISOString(),
     }));
-    await saveConversationState(inbound, { ...existingState, stage: 'human_escalation_requested' });
-    return { ok: true, classification: { area: 'financeiro', intent: 'anticipated_payment_human_escalation', confidence: 1 }, action: send, internalAlert, requiresHuman: true };
+    const savedState = await saveConversationState(inbound, { ...existingState, stage: 'human_escalation_requested' });
+    const chatwootNote = await createChatwootHandoffNote(inbound, savedState);
+    return { ok: true, classification: { area: 'financeiro', intent: 'anticipated_payment_human_escalation', confidence: 1 }, action: send, internalAlert, chatwootNote, requiresHuman: true };
   }
 
   const lastPayment = lastPaymentBySender.get(inbound.from);
