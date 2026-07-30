@@ -2,6 +2,43 @@
 
 ## Financeiro
 
+### Consulta de faturas em um ou vários contratos
+
+Decisão de Clistenis em 2026-07-30: se uma ou mais faturas estiverem no CPF/CNPJ confirmado, a Emy V2 deve tratar como fatura do cliente, mesmo quando houver mais de um contrato.
+
+Regras:
+
+- CPF/CNPJ é obrigatório antes de expor dados financeiros.
+- Se o CPF/CNPJ vier na primeira mensagem, a Emy não deve pedir novamente no mesmo atendimento; deve consultar direto.
+- Se houver uma fatura aberta, responder de forma curta e enviar o meio solicitado: Pix, link/QRCode ou ambos.
+- Se houver várias faturas abertas em contratos diferentes do mesmo CPF/CNPJ, listar todas de forma objetiva e enviar os meios de pagamento correspondentes.
+- A resposta deve ser humana, simples e sem excesso de texto.
+
+### Fatura ainda não gerada e pagamento antecipado
+
+Decisão de Clistenis em 2026-07-30: quando não houver fatura aberta e o próximo vencimento estiver a mais de 15 dias, a Emy deve explicar que a fatura provavelmente ainda não foi gerada pelo sistema.
+
+Fluxo esperado:
+
+1. Cliente pede pagamento/fatura.
+2. Emy confirma CPF/CNPJ, se ainda não tiver sido informado.
+3. Emy consulta faturas abertas no SGP.
+4. Se não houver fatura aberta, estima o próximo vencimento pelo histórico disponível.
+5. Se faltarem mais de 15 dias, informa ao cliente que a fatura provavelmente ainda não foi gerada.
+6. Se o cliente quiser pagar antecipado mesmo assim, a Emy deve:
+   - informar ao cliente que a equipe financeira vai gerar o boleto e enviar o quanto antes;
+   - acionar humano no grupo interno do WhatsApp com cliente, WhatsApp, documento mascarado e contexto.
+
+Mensagem-base ao cliente quando não houver fatura:
+
+> Consultei aqui e não encontrei fatura em aberto no momento. Como ainda faltam mais de 15 dias para o próximo vencimento, é provável que essa fatura ainda não tenha sido gerada pelo sistema. Se você quiser pagar antecipado mesmo assim, me diga “quero pagar antecipado” que eu aviso a equipe para gerar o boleto para você.
+
+Mensagem-base ao cliente quando ele insistir no pagamento antecipado:
+
+> Sem problema. Vou avisar a equipe financeira para gerar o boleto antecipado. Assim que estiver pronto, enviamos para você por aqui.
+
+Pendência operacional: configurar `FINANCE_HUMAN_GROUP_JID` e habilitar `FINANCE_HUMAN_ESCALATION_ENABLED=true` somente após Clistenis confirmar o grupo correto.
+
 ### Promessa de pagamento
 
 Decisão de Clistenis em 2026-07-29: atendimentos simples de promessa de pagamento devem ser resolvidos pela Emy V2 sem chamar humano.
