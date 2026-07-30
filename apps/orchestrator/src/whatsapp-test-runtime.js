@@ -144,12 +144,14 @@ export async function handleInbound(payload) {
         stage: 'no_open_invoice',
         document: maskDocument(cpfcnpj),
         nextInvoiceEstimate: payment.next_invoice_estimate,
+        historicalContracts: payment.historical_contracts || [],
         updatedAt: new Date().toISOString(),
       });
       const text = buildNoOpenInvoiceMessage({
         name: pendingState.name,
         nextDueDate: payment.next_invoice_estimate?.nextDueDate,
         daysUntilNextDue: payment.next_invoice_estimate?.daysUntilNextDue,
+        contracts: payment.historical_contracts || [],
       });
       const send = await evolution.sendText({ to: inbound.from, text });
       return { ok: true, classification: { area: 'financeiro', intent: 'no_open_invoice', confidence: 1 }, document: maskDocument(cpfcnpj), action: send };
@@ -217,12 +219,14 @@ export async function handleInbound(payload) {
       name: inbound.pushName,
       document: maskDocument(cpfcnpj),
       nextInvoiceEstimate: payment.next_invoice_estimate,
+      historicalContracts: payment.historical_contracts || [],
       updatedAt: new Date().toISOString(),
     });
     const text = buildNoOpenInvoiceMessage({
       name: inbound.pushName,
       nextDueDate: payment.next_invoice_estimate?.nextDueDate,
       daysUntilNextDue: payment.next_invoice_estimate?.daysUntilNextDue,
+      contracts: payment.historical_contracts || [],
     });
     const send = await evolution.sendText({ to: inbound.from, text });
     return { ok: true, classification: { ...classification, intent: 'no_open_invoice' }, document: maskDocument(cpfcnpj), action: send };

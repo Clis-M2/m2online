@@ -77,10 +77,18 @@ test('isAnticipatedPaymentRequest detects customer insistence to pay early', () 
 });
 
 test('buildNoOpenInvoiceMessage explains invoice not generated when due date is far', () => {
-  const text = buildNoOpenInvoiceMessage({ name: 'Clistenis', nextDueDate: '2026-08-25', daysUntilNextDue: 20 });
-  assert.match(text, /não encontrei fatura em aberto/);
-  assert.match(text, /mais de 15 dias/);
+  const text = buildNoOpenInvoiceMessage({ name: 'Clistenis', nextDueDate: '2026-08-25', daysUntilNextDue: 20, contracts: [10011, 10209] });
+  assert.match(text, /localizei seu cadastro/);
+  assert.match(text, /mais de um contrato/);
+  assert.match(text, /só gera a fatura 15 dias antes/);
   assert.match(text, /quero pagar antecipado/);
+});
+
+test('buildNoOpenInvoiceMessage does not invent invoice when estimate is weak', () => {
+  const text = buildNoOpenInvoiceMessage({ name: 'Clistenis', nextDueDate: '2026-06-21', daysUntilNextDue: -38, contracts: [10011, 10209] });
+  assert.match(text, /não encontrei nenhuma fatura em aberto/);
+  assert.match(text, /não vou gerar nenhum link ou Pix/);
+  assert.doesNotMatch(text, /encontrei sua fatura/);
 });
 
 test('buildAnticipatedPaymentInternalMessage prepares human escalation', () => {

@@ -49,6 +49,10 @@ function inferNextInvoiceFromPaidInvoices(invoices) {
   };
 }
 
+function uniqueContractsFromInvoices(invoices) {
+  return [...new Set((invoices || []).map((invoice) => invoice.contractId).filter(Boolean))];
+}
+
 export class SgpClient {
   constructor(config = {}) {
     this.baseUrl = (config.baseUrl || requireEnv('SGP_API_URL')).replace(/\/$/, '');
@@ -110,7 +114,14 @@ export class SgpClient {
 
     const paidResult = await this.listInvoicesByCpf(cpfcnpj, {
       status: 'pagos',
-      limit: 5,
+      limit: 20,
+      ordenar: 'data_vencimento',
+      ordenar_ordem: 'desc',
+    }).catch(() => ({ pagination: {}, invoices: [] }));
+
+    const canceledResult = await this.listInvoicesByCpf(cpfcnpj, {
+      status: 'cancelados',
+      limit: 20,
       ordenar: 'data_vencimento',
       ordenar_ordem: 'desc',
     }).catch(() => ({ pagination: {}, invoices: [] }));
@@ -120,6 +131,9 @@ export class SgpClient {
       pagination,
       openInvoices: invoices,
       paidInvoices: paidResult.invoices,
+      canceledInvoices: canceledResult.invoices,
+      historicalContracts: uniqueContractsFromInvoices([...invoices, ...paidResult.invoices]),
+      allKnownContracts: uniqueContractsFromInvoices([...invoices, ...paidResult.invoices, ...canceledResult.invoices]),
       primaryInvoice: invoices[0] || null,
       nextInvoiceEstimate: invoices.length ? null : inferNextInvoiceFromPaidInvoices(paidResult.invoices),
     };
@@ -175,6 +189,8 @@ export function buildPaymentResponse(paymentInfo) {
       fatura: '',
       open_invoices_count: 0,
       open_invoices: [],
+      historical_contracts: paymentInfo.historicalContracts || [],
+      all_known_contracts: paymentInfo.allKnownContracts || paymentInfo.historicalContracts || [],
       next_invoice_estimate: paymentInfo.nextInvoiceEstimate || null,
     };
   }
@@ -200,6 +216,8 @@ export function buildPaymentResponse(paymentInfo) {
     contrato: invoice.contractId,
     fatura: invoice.invoiceId,
     open_invoices_count: paymentInfo.openInvoices?.length || 1,
+    historical_contracts: paymentInfo.historicalContracts || [],
+    all_known_contracts: paymentInfo.allKnownContracts || paymentInfo.historicalContracts || [],
     open_invoices: (paymentInfo.openInvoices || [invoice]).map((item) => ({
       boleto_link: item.boletoLink,
       link_pagamento: item.paymentLink,

@@ -44,25 +44,40 @@ export function buildPaymentDeadlineMessage() {
   return 'Após pagamento por PIX, o reconhecimento costuma ocorrer em até 15 minutos. Boleto pode levar até 3 dias úteis.';
 }
 
-export function buildNoOpenInvoiceMessage({ name = '', nextDueDate = '', daysUntilNextDue = null } = {}) {
-  const prefix = name ? `${name}, consultei aqui e não encontrei fatura em aberto no momento.` : 'Consultei aqui e não encontrei fatura em aberto no momento.';
+function displayFirstName(name = '') {
+  const first = String(name || '').trim().split(/\s+/)[0] || '';
+  if (!first || /^\+?\d+$/.test(first)) return '';
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+export function buildNoOpenInvoiceMessage({ name = '', nextDueDate = '', daysUntilNextDue = null, contracts = [] } = {}) {
+  const displayName = displayFirstName(name);
+  const first = displayName ? `${displayName}, localizei seu cadastro, mas não encontrei nenhuma fatura em aberto agora.` : 'Localizei seu cadastro, mas não encontrei nenhuma fatura em aberto agora.';
+  const contractLine = contracts.length > 1
+    ? `Vi histórico em mais de um contrato nesse CPF (${contracts.join(', ')}), então conferi o cadastro como um todo.`
+    : contracts.length === 1
+      ? `Conferi o contrato ${contracts[0]} nesse CPF.`
+      : '';
+
   if (nextDueDate && Number.isFinite(daysUntilNextDue) && daysUntilNextDue > 15) {
     return [
-      prefix,
+      first,
+      contractLine,
       '',
-      `Pelo histórico, o próximo vencimento fica para ${formatDateBr(nextDueDate)}.`,
-      'Como ainda faltam mais de 15 dias, é provável que essa fatura ainda não tenha sido gerada pelo sistema.',
+      `O próximo vencimento estimado é ${formatDateBr(nextDueDate)}.`,
+      'Como o sistema só gera a fatura 15 dias antes do vencimento, ela provavelmente ainda não foi gerada.',
       '',
       'Se você quiser pagar antecipado mesmo assim, me diga “quero pagar antecipado” que eu aviso a equipe para gerar o boleto para você.',
-    ].join('\n');
+    ].filter((line) => line !== '').join('\n');
   }
 
   return [
-    prefix,
+    first,
+    contractLine,
     '',
-    'Pode ser que a próxima fatura ainda não tenha sido gerada pelo sistema.',
+    'Para não te passar uma informação errada, não vou gerar nenhum link ou Pix sem uma fatura disponível no sistema.',
     'Se você quiser pagar antecipado, me diga “quero pagar antecipado” que eu aviso a equipe para gerar o boleto para você.',
-  ].join('\n');
+  ].filter((line) => line !== '').join('\n');
 }
 
 export function buildAnticipatedPaymentClientMessage({ name = '' } = {}) {

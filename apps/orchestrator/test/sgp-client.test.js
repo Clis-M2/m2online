@@ -44,6 +44,7 @@ test('buildPaymentResponse returns no invoice estimate when there is no open inv
 
   assert.equal(response.fatura, '');
   assert.equal(response.open_invoices_count, 0);
+  assert.deepEqual(response.historical_contracts, []);
   assert.equal(response.next_invoice_estimate.nextDueDate, '2026-08-25');
 });
 
