@@ -20,6 +20,15 @@ import {
   buildPaymentLinkMessage,
   buildPixMessage,
 } from './core/payment-message.js';
+import {
+  buildDocumentAttemptMessage,
+  buildExpiredDocumentMessage,
+  buildSecurityHandoffMessage,
+  DEFAULT_DOCUMENT_TTL_MS,
+  DEFAULT_MAX_DOCUMENT_ATTEMPTS,
+  documentValidationExpired,
+  incrementDocumentAttempts,
+} from './core/financial-security.js';
 import { classifyIntent } from './core/router.js';
 import { isAllowlistedWhatsappNumber, normalizeWhatsappNumber, parseAllowlist } from './core/safety.js';
 
@@ -30,6 +39,8 @@ const sgp = new SgpClient();
 const evolution = new EvolutionClient();
 const chatwoot = new ChatwootClient();
 const conversationStore = new SupabaseConversationStore();
+const DOCUMENT_TTL_MS = Number(process.env.EMY_DOCUMENT_VALIDATION_TTL_MS || DEFAULT_DOCUMENT_TTL_MS);
+const MAX_DOCUMENT_ATTEMPTS = Number(process.env.EMY_MAX_DOCUMENT_ATTEMPTS || DEFAULT_MAX_DOCUMENT_ATTEMPTS);
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
 
@@ -90,6 +101,9 @@ function sanitizeConversationState(state = {}) {
     nextInvoiceEstimate: state.nextInvoiceEstimate,
     historicalContracts: state.historicalContracts,
     paymentSummary: state.payment ? summarizePayment(state.payment) : state.paymentSummary,
+    documentValidatedAt: state.documentValidatedAt,
+    documentAttempts: state.documentAttempts || 0,
+    securityBlocked: state.securityBlocked || false,
     startedAt: state.startedAt,
     updatedAt: state.updatedAt,
   };
@@ -134,6 +148,48 @@ async function saveConversationState(inbound, state) {
     console.error(JSON.stringify({ event: 'supabase_conversation_state_save_failed', error: error.message, from: inbound.from, stage: updatedState.stage, checked_at: new Date().toISOString() }));
   }
   return updatedState;
+}
+
+async function auditDecision(inbound, entry) {
+  if (!conversationStore.enabled) return null;
+  try {
+    return await conversationStore.logDecision({
+      conversationId: inbound.from,
+      whatsappInstance: process.env.EVOLUTION_INSTANCE || 'CLIS',
+      agentName: 'emy-financeiro',
+      ...entry,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'supabase_decision_log_failed', error: error.message, from: inbound.from, checked_at: new Date().toISOString() }));
+    return null;
+  }
+}
+
+async function auditToolCall(inbound, entry) {
+  if (!conversationStore.enabled) return null;
+  try {
+    return await conversationStore.logToolCall({
+      conversationId: inbound.from,
+      whatsappInstance: process.env.EVOLUTION_INSTANCE || 'CLIS',
+      ...entry,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'supabase_tool_call_log_failed', error: error.message, from: inbound.from, checked_at: new Date().toISOString() }));
+    return null;
+  }
+}
+
+async function escalateSecurityHandoff(inbound, state, reason) {
+  const text = buildSecurityHandoffMessage({ name: state?.name || inbound.pushName });
+  const send = await evolution.sendText({ to: inbound.from, text });
+  const savedState = await saveConversationState(inbound, { ...(state || {}), stage: 'human_escalation_requested', securityBlocked: true, securityReason: reason });
+  await auditDecision(inbound, {
+    decisionType: 'financeiro.security_handoff',
+    decision: { reason, stage: savedState.stage, document: savedState.document || null, attempts: savedState.documentAttempts || 0 },
+    requiresHuman: true,
+    confidence: 1,
+  });
+  return { ok: true, classification: { area: 'financeiro', intent: 'security_handoff', confidence: 1 }, action: send, requiresHuman: true };
 }
 
 function readJson(req) {
@@ -190,6 +246,35 @@ export async function handleInbound(payload) {
 
   const optionText = inbound.text.toLowerCase().trim();
   const existingState = await loadConversationState(inbound);
+
+  if (existingState?.securityBlocked) {
+    return escalateSecurityHandoff(inbound, existingState, existingState.securityReason || 'security_block_active');
+  }
+
+  if (existingState?.stage === 'payment_returned' && documentValidationExpired(existingState, DOCUMENT_TTL_MS)) {
+    lastPaymentBySender.delete(inbound.from);
+    const request = detectFinancialRequest(inbound.text);
+    const savedState = await saveConversationState(inbound, {
+      ...existingState,
+      stage: 'awaiting_document',
+      requestType: request.type,
+      payment: null,
+      paymentSummary: null,
+      document: null,
+      documentValidatedAt: null,
+      documentAttempts: 0,
+    });
+    const text = buildExpiredDocumentMessage({ name: savedState.name || inbound.pushName });
+    const send = await evolution.sendText({ to: inbound.from, text });
+    await auditDecision(inbound, {
+      decisionType: 'financeiro.document_expired',
+      decision: { previousStage: existingState.stage, newStage: 'awaiting_document', ttlMs: DOCUMENT_TTL_MS },
+      requiresHuman: false,
+      confidence: 1,
+    });
+    return { ok: true, classification: { area: 'financeiro', intent: 'document_validation_expired', confidence: 1 }, needsDocument: true, action: send };
+  }
+
   if (existingState?.stage === 'no_open_invoice' && isAnticipatedPaymentRequest(inbound.text)) {
     const text = buildAnticipatedPaymentClientMessage({ name: existingState.name });
     const send = await evolution.sendText({ to: inbound.from, text });
@@ -218,26 +303,59 @@ export async function handleInbound(payload) {
   }
 
   const lastPayment = lastPaymentBySender.get(inbound.from);
+  if (lastPayment && existingState && documentValidationExpired(existingState, DOCUMENT_TTL_MS)) {
+    lastPaymentBySender.delete(inbound.from);
+    const savedState = await saveConversationState(inbound, { ...existingState, stage: 'awaiting_document', payment: null, paymentSummary: null, document: null, documentValidatedAt: null, documentAttempts: 0 });
+    const send = await evolution.sendText({ to: inbound.from, text: buildExpiredDocumentMessage({ name: savedState.name || inbound.pushName }) });
+    await auditDecision(inbound, { decisionType: 'financeiro.payment_option_blocked_expired_document', decision: { optionText, ttlMs: DOCUMENT_TTL_MS }, requiresHuman: false, confidence: 1 });
+    return { ok: true, classification: { area: 'financeiro', intent: 'document_validation_expired', confidence: 1 }, needsDocument: true, action: send };
+  }
   if (lastPayment && ['1', 'pix', 'pix copia e cola', 'copia e cola'].includes(optionText)) {
     const send = await evolution.sendText({ to: inbound.from, text: buildPixMessage(lastPayment) });
+    await auditDecision(inbound, { decisionType: 'financeiro.payment_pix_option', decision: { payment: summarizePayment(lastPayment) }, requiresHuman: false, confidence: 1 });
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_pix_option', confidence: 1 }, action: send };
   }
   if (lastPayment && ['2', 'link', 'link de pagamento', 'qrcode', 'qr code', 'boleto'].includes(optionText)) {
     const send = await evolution.sendText({ to: inbound.from, text: buildPaymentLinkMessage(lastPayment) });
+    await auditDecision(inbound, { decisionType: 'financeiro.payment_link_option', decision: { payment: summarizePayment(lastPayment) }, requiresHuman: false, confidence: 1 });
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: send };
   }
 
   const pendingState = existingState;
   const cpfcnpj = extractCpfCnpj(inbound.text);
 
+  if (pendingState?.stage === 'awaiting_document' && !cpfcnpj) {
+    const attempt = incrementDocumentAttempts(pendingState, MAX_DOCUMENT_ATTEMPTS);
+    const savedState = await saveConversationState(inbound, { ...pendingState, documentAttempts: attempt.attempts, securityBlocked: attempt.blocked });
+    await auditDecision(inbound, {
+      decisionType: attempt.blocked ? 'financeiro.document_attempts_exceeded' : 'financeiro.invalid_document_attempt',
+      decision: { attempts: attempt.attempts, maxAttempts: MAX_DOCUMENT_ATTEMPTS, stage: savedState.stage },
+      requiresHuman: attempt.blocked,
+      confidence: 1,
+    });
+    if (attempt.blocked) return escalateSecurityHandoff(inbound, savedState, 'document_attempts_exceeded');
+    const text = buildDocumentAttemptMessage({ attempts: attempt.attempts, maxAttempts: MAX_DOCUMENT_ATTEMPTS });
+    const send = await evolution.sendText({ to: inbound.from, text });
+    return { ok: true, classification: { area: 'financeiro', intent: 'invalid_document_attempt', confidence: 1 }, needsDocument: true, action: send };
+  }
+
   if (pendingState?.stage === 'awaiting_document' && cpfcnpj) {
     const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
     const payment = buildPaymentResponse(paymentInfo);
+    await auditToolCall(inbound, {
+      toolName: 'sgp.getPaymentInfoByCpf',
+      toolScope: 'read',
+      input: { document: maskDocument(cpfcnpj) },
+      output: { payment: summarizePayment(payment), openInvoicesCount: payment.open_invoices_count || 0, historicalContracts: payment.historical_contracts || [] },
+      status: 'success',
+    });
     if (!payment.fatura) {
       await saveConversationState(inbound, {
         ...pendingState,
         stage: 'no_open_invoice',
         document: maskDocument(cpfcnpj),
+        documentValidatedAt: new Date().toISOString(),
+        documentAttempts: 0,
         nextInvoiceEstimate: payment.next_invoice_estimate,
         historicalContracts: payment.historical_contracts || [],
       });
@@ -255,6 +373,8 @@ export async function handleInbound(payload) {
       ...pendingState,
       stage: 'payment_returned',
       document: maskDocument(cpfcnpj),
+      documentValidatedAt: new Date().toISOString(),
+      documentAttempts: 0,
       payment,
     });
 
@@ -302,6 +422,13 @@ export async function handleInbound(payload) {
 
   const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
   const payment = buildPaymentResponse(paymentInfo);
+  await auditToolCall(inbound, {
+    toolName: 'sgp.getPaymentInfoByCpf',
+    toolScope: 'read',
+    input: { document: maskDocument(cpfcnpj) },
+    output: { payment: summarizePayment(payment), openInvoicesCount: payment.open_invoices_count || 0, historicalContracts: payment.historical_contracts || [] },
+    status: 'success',
+  });
   const request = detectFinancialRequest(inbound.text);
   if (!payment.fatura) {
     await saveConversationState(inbound, {
@@ -310,6 +437,8 @@ export async function handleInbound(payload) {
       tone: detectTone(inbound.text),
       name: inbound.pushName,
       document: maskDocument(cpfcnpj),
+      documentValidatedAt: new Date().toISOString(),
+      documentAttempts: 0,
       nextInvoiceEstimate: payment.next_invoice_estimate,
       historicalContracts: payment.historical_contracts || [],
     });
@@ -329,6 +458,8 @@ export async function handleInbound(payload) {
     tone: detectTone(inbound.text),
     name: inbound.pushName,
     document: maskDocument(cpfcnpj),
+    documentValidatedAt: new Date().toISOString(),
+    documentAttempts: 0,
     payment,
   });
   const messages = [

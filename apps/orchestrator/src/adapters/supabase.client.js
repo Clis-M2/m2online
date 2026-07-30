@@ -22,6 +22,10 @@ function toDbState(state) {
   };
 }
 
+function redactJson(value) {
+  return JSON.parse(JSON.stringify(value || {}).replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, '[cpf]').replace(/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g, '[cnpj]'));
+}
+
 function fromDbState(record) {
   if (!record) return null;
   return {
@@ -73,6 +77,60 @@ export class SupabaseConversationStore {
     const data = await response.json().catch(() => []);
     if (!response.ok) throw new Error(`Supabase conversation_state GET ${response.status}: ${JSON.stringify(data).slice(0, 300)}`);
     return fromDbState(Array.isArray(data) ? data[0] : null);
+  }
+
+  async findConversationStateRecord({ conversationId, whatsappInstance }) {
+    return this.getConversationState({ conversationId, whatsappInstance });
+  }
+
+  async logDecision(entry) {
+    if (!this.enabled) return null;
+    let conversationStateId = entry.conversationStateId || null;
+    if (!conversationStateId && entry.conversationId && entry.whatsappInstance) {
+      const state = await this.getConversationState({ conversationId: entry.conversationId, whatsappInstance: entry.whatsappInstance });
+      conversationStateId = state?.id || null;
+    }
+    const response = await fetch(`${this.restUrl}/decision_log`, {
+      method: 'POST',
+      headers: this.headers({ Prefer: 'return=representation' }),
+      body: JSON.stringify({
+        conversation_state_id: conversationStateId,
+        agent_name: entry.agentName || 'emy-financeiro',
+        decision_type: entry.decisionType || 'financeiro.event',
+        decision: redactJson(entry.decision || {}),
+        confidence: entry.confidence ?? null,
+        requires_human: Boolean(entry.requiresHuman),
+      }),
+    });
+    const data = await response.json().catch(() => []);
+    if (!response.ok) throw new Error(`Supabase decision_log POST ${response.status}: ${JSON.stringify(data).slice(0, 300)}`);
+    return Array.isArray(data) ? data[0] : data;
+  }
+
+  async logToolCall(entry) {
+    if (!this.enabled) return null;
+    let conversationStateId = entry.conversationStateId || null;
+    if (!conversationStateId && entry.conversationId && entry.whatsappInstance) {
+      const state = await this.getConversationState({ conversationId: entry.conversationId, whatsappInstance: entry.whatsappInstance });
+      conversationStateId = state?.id || null;
+    }
+    const response = await fetch(`${this.restUrl}/tool_call_log`, {
+      method: 'POST',
+      headers: this.headers({ Prefer: 'return=representation' }),
+      body: JSON.stringify({
+        conversation_state_id: conversationStateId,
+        tool_name: entry.toolName || 'unknown',
+        tool_scope: entry.toolScope || 'read',
+        input_redacted: redactJson(entry.input || {}),
+        output_redacted: redactJson(entry.output || {}),
+        status: entry.status || 'success',
+        error_message: entry.errorMessage || null,
+        idempotency_key: entry.idempotencyKey || null,
+      }),
+    });
+    const data = await response.json().catch(() => []);
+    if (!response.ok) throw new Error(`Supabase tool_call_log POST ${response.status}: ${JSON.stringify(data).slice(0, 300)}`);
+    return Array.isArray(data) ? data[0] : data;
   }
 
   async upsertConversationState(state) {
