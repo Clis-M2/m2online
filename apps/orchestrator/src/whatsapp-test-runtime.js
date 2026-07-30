@@ -5,7 +5,6 @@ import { extractCpfCnpj, maskDocument } from './core/document.js';
 import { loadEnvFile } from './core/env.js';
 import {
   buildCustomerPaymentMessages,
-  buildPaymentDeadlineMessage,
   buildPaymentLinkMessage,
   buildPixMessage,
 } from './core/payment-message.js';
@@ -78,9 +77,8 @@ export async function handleInbound(payload) {
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_pix_option', confidence: 1 }, action: send };
   }
   if (lastPayment && ['2', 'link', 'link de pagamento', 'qrcode', 'qr code', 'boleto'].includes(optionText)) {
-    const sendLink = await evolution.sendText({ to: inbound.from, text: buildPaymentLinkMessage(lastPayment) });
-    const sendDeadline = await evolution.sendText({ to: inbound.from, text: buildPaymentDeadlineMessage() });
-    return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: sendDeadline, actions: [sendLink, sendDeadline] };
+    const send = await evolution.sendText({ to: inbound.from, text: buildPaymentLinkMessage(lastPayment) });
+    return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: send };
   }
 
   const classification = classifyIntent(inbound.text);

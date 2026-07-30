@@ -16,26 +16,24 @@ export function buildPaymentMenuMessage(payment) {
     `Vencimento: ${payment.vencimento_atual}`,
     '',
     'Como prefere pagar?',
-    '1️⃣ Pix copia e cola',
-    '2️⃣ Link de pagamento / QRCode',
+    'Digite 1 para Pix copia e cola',
+    'Digite 2 para Link de pagamento / QRCode',
   ].join('\n');
 }
 
 export function buildPixMessage(payment) {
   if (!payment?.pix_copia_cola) return 'Não encontrei código Pix disponível para essa fatura.';
-  return ['Código PIX copia e cola:', payment.pix_copia_cola].join('\n');
+  return [
+    'Pix copia e cola:',
+    '```',
+    payment.pix_copia_cola,
+    '```',
+  ].join('\n');
 }
 
 export function buildPaymentLinkMessage(payment) {
-  if (!payment?.link_pagamento && !payment?.boleto_link) return 'Não encontrei link de pagamento disponível para essa fatura.';
-  const messages = [];
-  if (payment.link_pagamento) {
-    messages.push(['Link de pagamento / QRCode:', payment.link_pagamento].join('\n'));
-  }
-  if (payment.boleto_link) {
-    messages.push(['Boleto:', payment.boleto_link].join('\n'));
-  }
-  return messages.join('\n\n');
+  if (!payment?.link_pagamento) return 'Não encontrei link de pagamento disponível para essa fatura.';
+  return ['Link de pagamento / QRCode:', payment.link_pagamento].join('\n');
 }
 
 export function buildPaymentDeadlineMessage() {

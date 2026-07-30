@@ -66,10 +66,11 @@ test('buildCustomerPaymentMessages returns a clean payment menu', () => {
   const messages = buildCustomerPaymentMessages(payment);
   assert.equal(messages.length, 1);
   assert.match(messages[0], /Contrato: 12044/);
-  assert.match(messages[0], /1️⃣ Pix copia e cola/);
-  assert.match(messages[0], /2️⃣ Link de pagamento \/ QRCode/);
+  assert.match(messages[0], /Digite 1 para Pix copia e cola/);
+  assert.match(messages[0], /Digite 2 para Link de pagamento \/ QRCode/);
 
-  assert.match(buildPixMessage(payment), /Código PIX copia e cola/);
+  assert.match(buildPixMessage(payment), /Pix copia e cola/);
+  assert.match(buildPixMessage(payment), /```\npix\n```/);
   assert.match(buildPaymentLinkMessage(payment), /Link de pagamento \/ QRCode/);
   assert.match(buildCustomerPaymentMessage(payment), /Como prefere pagar/);
 });
