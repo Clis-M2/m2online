@@ -35,6 +35,18 @@ test('normalizeInvoice maps SGP URA title fields to Emy payment fields', () => {
   assert.equal(invoice.hasPaymentData, true);
 });
 
+test('buildPaymentResponse returns no invoice estimate when there is no open invoice', () => {
+  const response = buildPaymentResponse({
+    primaryInvoice: null,
+    openInvoices: [],
+    nextInvoiceEstimate: { nextDueDate: '2026-08-25', daysUntilNextDue: 20 },
+  });
+
+  assert.equal(response.fatura, '');
+  assert.equal(response.open_invoices_count, 0);
+  assert.equal(response.next_invoice_estimate.nextDueDate, '2026-08-25');
+});
+
 test('buildPaymentResponse returns structured payment fields for open invoice', () => {
   const response = buildPaymentResponse({
     primaryInvoice: {

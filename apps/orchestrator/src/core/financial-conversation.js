@@ -1,3 +1,7 @@
+export function isAnticipatedPaymentRequest(text = '') {
+  return /antecipad|antes do vencimento|gerar (o )?boleto|gera (o )?boleto|quero pagar mesmo assim|mesmo assim|adiantar|adiantado/i.test(String(text || ''));
+}
+
 export function detectFinancialRequest(text = '') {
   const normalized = String(text).toLowerCase();
   const wantsPix = /\bpix\b|copia e cola|copia-e-cola/.test(normalized);
@@ -40,28 +44,42 @@ export function buildCpfRequestMessage({ name = '', tone = 'neutro' } = {}) {
 }
 
 export function buildFoundInvoiceMessage({ name = '', payment, requestType = 'payment_general' }) {
-  const prefix = firstName(name) ? `${firstName(name)}, encontrei sua fatura:` : 'Encontrei sua fatura:';
+  const invoiceCount = payment.open_invoices_count || (payment.open_invoices?.length ?? 1);
+  const prefix = firstName(name)
+    ? invoiceCount > 1
+      ? `${firstName(name)}, encontrei ${invoiceCount} faturas em aberto no seu CPF:`
+      : `${firstName(name)}, encontrei sua fatura:`
+    : invoiceCount > 1
+      ? `Encontrei ${invoiceCount} faturas em aberto no seu CPF:`
+      : 'Encontrei sua fatura:';
   const next = requestType === 'pix'
     ? 'Já vou te enviar o Pix copia e cola.'
     : requestType === 'link'
       ? 'Já vou te enviar o link de pagamento.'
       : 'Já vou te enviar o Pix e o link de pagamento.';
 
-  return [
-    prefix,
-    '',
-    `Contrato: ${payment.contrato}`,
-    `Fatura: ${payment.fatura}`,
-    `Valor atualizado: ${Number(payment.valor_atual || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`,
-    `Vencimento: ${payment.vencimento_atual}`,
-    '',
-    next,
-  ].join('\n');
+  const invoiceLines = (payment.open_invoices?.length ? payment.open_invoices : [payment])
+    .map((invoice, index) => [
+      invoiceCount > 1 ? `Fatura ${index + 1}:` : '',
+      `Contrato: ${invoice.contrato}`,
+      `Fatura: ${invoice.fatura}`,
+      `Valor atualizado: ${Number(invoice.valor_atual || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`,
+      `Vencimento: ${invoice.vencimento_atual}`,
+    ].filter(Boolean).join('\n'));
+
+  return [prefix, '', ...invoiceLines, '', next].join('\n');
 }
 
 export function messagesForRequestType({ payment, requestType, builders }) {
-  if (requestType === 'pix') return [builders.pix(payment)];
-  if (requestType === 'link') return [builders.link(payment)];
-  if (requestType === 'boleto') return [builders.link(payment)];
-  return [builders.pix(payment), builders.link(payment)];
+  const invoices = payment.open_invoices?.length ? payment.open_invoices : [payment];
+  const messages = [];
+  for (const invoice of invoices) {
+    if (requestType === 'pix') messages.push(builders.pix(invoice));
+    else if (requestType === 'link' || requestType === 'boleto') messages.push(builders.link(invoice));
+    else {
+      messages.push(builders.pix(invoice));
+      messages.push(builders.link(invoice));
+    }
+  }
+  return messages;
 }

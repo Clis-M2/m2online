@@ -21,6 +21,34 @@ function daysLate(dueDate, now = new Date()) {
   return diff > 0 ? String(diff) : '0';
 }
 
+function addOneMonth(dateText) {
+  if (!dateText) return '';
+  const [year, month, day] = String(dateText).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCMonth(date.getUTCMonth() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function daysUntil(dateText, now = new Date()) {
+  if (!dateText) return null;
+  const target = new Date(`${dateText}T00:00:00-03:00`);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.ceil((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function inferNextInvoiceFromPaidInvoices(invoices) {
+  const latestPaid = invoices.find((invoice) => invoice.dueDate);
+  if (!latestPaid) return null;
+  const nextDueDate = addOneMonth(latestPaid.dueDate);
+  return {
+    basedOnInvoiceId: latestPaid.invoiceId,
+    basedOnDueDate: latestPaid.dueDate,
+    nextDueDate,
+    daysUntilNextDue: daysUntil(nextDueDate),
+  };
+}
+
 export class SgpClient {
   constructor(config = {}) {
     this.baseUrl = (config.baseUrl || requireEnv('SGP_API_URL')).replace(/\/$/, '');
@@ -75,16 +103,25 @@ export class SgpClient {
   async getPaymentInfoByCpf(cpfcnpj) {
     const { pagination, invoices } = await this.listInvoicesByCpf(cpfcnpj, {
       status: 'abertos',
-      limit: 10,
+      limit: 20,
       ordenar: 'data_vencimento',
       ordenar_ordem: 'desc',
     });
+
+    const paidResult = await this.listInvoicesByCpf(cpfcnpj, {
+      status: 'pagos',
+      limit: 5,
+      ordenar: 'data_vencimento',
+      ordenar_ordem: 'desc',
+    }).catch(() => ({ pagination: {}, invoices: [] }));
 
     return {
       cpfcnpj: onlyDigits(cpfcnpj),
       pagination,
       openInvoices: invoices,
+      paidInvoices: paidResult.invoices,
       primaryInvoice: invoices[0] || null,
+      nextInvoiceEstimate: invoices.length ? null : inferNextInvoiceFromPaidInvoices(paidResult.invoices),
     };
   }
 }
@@ -136,6 +173,9 @@ export function buildPaymentResponse(paymentInfo) {
       valor_atual: '',
       contrato: '',
       fatura: '',
+      open_invoices_count: 0,
+      open_invoices: [],
+      next_invoice_estimate: paymentInfo.nextInvoiceEstimate || null,
     };
   }
 
@@ -159,5 +199,21 @@ export function buildPaymentResponse(paymentInfo) {
     valor_atual: invoice.currentAmount,
     contrato: invoice.contractId,
     fatura: invoice.invoiceId,
+    open_invoices_count: paymentInfo.openInvoices?.length || 1,
+    open_invoices: (paymentInfo.openInvoices || [invoice]).map((item) => ({
+      boleto_link: item.boletoLink,
+      link_pagamento: item.paymentLink,
+      linha_digitavel: item.paymentLine,
+      codigo_barras: item.barcode,
+      pix_copia_cola: item.pixCopyPaste,
+      vencimento_atual: item.dueDate,
+      vencimento_original: item.dueDate,
+      dias_em_atraso: item.daysLate,
+      valor_original: item.originalAmount,
+      valor_atual: item.currentAmount,
+      contrato: item.contractId,
+      fatura: item.invoiceId,
+    })),
+    next_invoice_estimate: null,
   };
 }

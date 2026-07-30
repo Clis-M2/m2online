@@ -8,9 +8,13 @@ import {
   buildFoundInvoiceMessage,
   detectFinancialRequest,
   detectTone,
+  isAnticipatedPaymentRequest,
   messagesForRequestType,
 } from './core/financial-conversation.js';
 import {
+  buildAnticipatedPaymentClientMessage,
+  buildAnticipatedPaymentInternalMessage,
+  buildNoOpenInvoiceMessage,
   buildPaymentLinkMessage,
   buildPixMessage,
 } from './core/payment-message.js';
@@ -91,6 +95,33 @@ export async function handleInbound(payload) {
   }
 
   const optionText = inbound.text.toLowerCase().trim();
+  const existingState = conversationStateBySender.get(inbound.from);
+  if (existingState?.stage === 'no_open_invoice' && isAnticipatedPaymentRequest(inbound.text)) {
+    const text = buildAnticipatedPaymentClientMessage({ name: existingState.name });
+    const send = await evolution.sendText({ to: inbound.from, text });
+    const internalAlert = await evolution.sendInternalText({
+      to: process.env.FINANCE_HUMAN_GROUP_JID || '',
+      text: buildAnticipatedPaymentInternalMessage({
+        name: existingState.name,
+        from: inbound.from,
+        document: existingState.document,
+        nextDueDate: existingState.nextInvoiceEstimate?.nextDueDate,
+      }),
+    });
+    console.log(JSON.stringify({
+      event: 'finance_human_escalation_needed',
+      reason: 'anticipated_payment_invoice_not_generated',
+      from: inbound.from,
+      document: existingState.document,
+      nextDueDate: existingState.nextInvoiceEstimate?.nextDueDate || null,
+      internalAlertMode: internalAlert.mode,
+      internalAlertSent: internalAlert.sentToInternalGroup || false,
+      checked_at: new Date().toISOString(),
+    }));
+    conversationStateBySender.set(inbound.from, { ...existingState, stage: 'human_escalation_requested', updatedAt: new Date().toISOString() });
+    return { ok: true, classification: { area: 'financeiro', intent: 'anticipated_payment_human_escalation', confidence: 1 }, action: send, internalAlert, requiresHuman: true };
+  }
+
   const lastPayment = lastPaymentBySender.get(inbound.from);
   if (lastPayment && ['1', 'pix', 'pix copia e cola', 'copia e cola'].includes(optionText)) {
     const send = await evolution.sendText({ to: inbound.from, text: buildPixMessage(lastPayment) });
@@ -107,6 +138,22 @@ export async function handleInbound(payload) {
   if (pendingState?.stage === 'awaiting_document' && cpfcnpj) {
     const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
     const payment = buildPaymentResponse(paymentInfo);
+    if (!payment.fatura) {
+      conversationStateBySender.set(inbound.from, {
+        ...pendingState,
+        stage: 'no_open_invoice',
+        document: maskDocument(cpfcnpj),
+        nextInvoiceEstimate: payment.next_invoice_estimate,
+        updatedAt: new Date().toISOString(),
+      });
+      const text = buildNoOpenInvoiceMessage({
+        name: pendingState.name,
+        nextDueDate: payment.next_invoice_estimate?.nextDueDate,
+        daysUntilNextDue: payment.next_invoice_estimate?.daysUntilNextDue,
+      });
+      const send = await evolution.sendText({ to: inbound.from, text });
+      return { ok: true, classification: { area: 'financeiro', intent: 'no_open_invoice', confidence: 1 }, document: maskDocument(cpfcnpj), action: send };
+    }
     lastPaymentBySender.set(inbound.from, payment);
     conversationStateBySender.set(inbound.from, {
       ...pendingState,
@@ -162,6 +209,24 @@ export async function handleInbound(payload) {
   const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
   const payment = buildPaymentResponse(paymentInfo);
   const request = detectFinancialRequest(inbound.text);
+  if (!payment.fatura) {
+    conversationStateBySender.set(inbound.from, {
+      stage: 'no_open_invoice',
+      requestType: request.type,
+      tone: detectTone(inbound.text),
+      name: inbound.pushName,
+      document: maskDocument(cpfcnpj),
+      nextInvoiceEstimate: payment.next_invoice_estimate,
+      updatedAt: new Date().toISOString(),
+    });
+    const text = buildNoOpenInvoiceMessage({
+      name: inbound.pushName,
+      nextDueDate: payment.next_invoice_estimate?.nextDueDate,
+      daysUntilNextDue: payment.next_invoice_estimate?.daysUntilNextDue,
+    });
+    const send = await evolution.sendText({ to: inbound.from, text });
+    return { ok: true, classification: { ...classification, intent: 'no_open_invoice' }, document: maskDocument(cpfcnpj), action: send };
+  }
   lastPaymentBySender.set(inbound.from, payment);
   conversationStateBySender.set(inbound.from, {
     stage: 'payment_returned',
