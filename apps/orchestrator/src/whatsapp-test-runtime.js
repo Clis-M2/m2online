@@ -114,6 +114,16 @@ export function createWhatsappTestServer() {
     if (req.method === 'POST' && ['/webhooks/evolution', '/emy-v2/webhooks/evolution'].includes(req.url)) {
       const payload = await readJson(req);
       const result = await handleInbound(payload);
+      console.log(JSON.stringify({
+        event: 'evolution_webhook_handled',
+        ok: result.ok,
+        ignored: result.ignored || false,
+        reason: result.reason || result.action?.reason || null,
+        area: result.classification?.area || null,
+        sentToCustomer: result.action?.sentToCustomer || false,
+        to: result.action?.to || result.from || null,
+        checked_at: new Date().toISOString(),
+      }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
       return;
