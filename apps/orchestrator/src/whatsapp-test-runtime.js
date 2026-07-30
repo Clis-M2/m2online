@@ -4,7 +4,13 @@ import { buildPaymentResponse, SgpClient } from './adapters/sgp.client.js';
 import { extractCpfCnpj, maskDocument } from './core/document.js';
 import { loadEnvFile } from './core/env.js';
 import {
-  buildCustomerPaymentMessages,
+  buildCpfRequestMessage,
+  buildFoundInvoiceMessage,
+  detectFinancialRequest,
+  detectTone,
+  messagesForRequestType,
+} from './core/financial-conversation.js';
+import {
   buildPaymentLinkMessage,
   buildPixMessage,
 } from './core/payment-message.js';
@@ -17,6 +23,20 @@ const PORT = Number(process.env.EMY_TEST_PORT || 3333);
 const sgp = new SgpClient();
 const evolution = new EvolutionClient();
 const lastPaymentBySender = new Map();
+const conversationStateBySender = new Map();
+
+function summarizePayment(payment) {
+  return {
+    contrato: payment.contrato,
+    fatura: payment.fatura,
+    valor_atual: payment.valor_atual,
+    vencimento_atual: payment.vencimento_atual,
+    has_pix: Boolean(payment.pix_copia_cola),
+    has_linha_digitavel: Boolean(payment.linha_digitavel),
+    has_link_pagamento: Boolean(payment.link_pagamento),
+    has_boleto_link: Boolean(payment.boleto_link),
+  };
+}
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -81,6 +101,41 @@ export async function handleInbound(payload) {
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: send };
   }
 
+  const pendingState = conversationStateBySender.get(inbound.from);
+  const cpfcnpj = extractCpfCnpj(inbound.text);
+
+  if (pendingState?.stage === 'awaiting_document' && cpfcnpj) {
+    const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
+    const payment = buildPaymentResponse(paymentInfo);
+    lastPaymentBySender.set(inbound.from, payment);
+    conversationStateBySender.set(inbound.from, {
+      ...pendingState,
+      stage: 'payment_returned',
+      document: maskDocument(cpfcnpj),
+      payment,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const messages = [
+      buildFoundInvoiceMessage({ name: pendingState.name, payment, requestType: pendingState.requestType }),
+      ...messagesForRequestType({
+        payment,
+        requestType: pendingState.requestType,
+        builders: { pix: buildPixMessage, link: buildPaymentLinkMessage },
+      }),
+    ];
+    const sends = [];
+    for (const text of messages) sends.push(await evolution.sendText({ to: inbound.from, text }));
+    return {
+      ok: true,
+      classification: { area: 'financeiro', intent: 'financial_document_received', confidence: 1 },
+      document: maskDocument(cpfcnpj),
+      payment: summarizePayment(payment),
+      action: sends.at(-1),
+      actions: sends,
+    };
+  }
+
   const classification = classifyIntent(inbound.text);
   if (classification.area !== 'financeiro') {
     const text = 'Recebi sua mensagem no ambiente de teste da Emy V2. Neste primeiro teste estou validando apenas o Financeiro: boleto, PIX, linha digitável e link de pagamento.';
@@ -88,17 +143,39 @@ export async function handleInbound(payload) {
     return { ok: true, classification, action: send };
   }
 
-  const cpfcnpj = extractCpfCnpj(inbound.text);
   if (!cpfcnpj) {
-    const text = 'Para consultar sua fatura no teste financeiro, me envie o CPF/CNPJ do titular. Vou usar apenas para consulta segura no SGP.';
+    const request = detectFinancialRequest(inbound.text);
+    const tone = detectTone(inbound.text);
+    conversationStateBySender.set(inbound.from, {
+      stage: 'awaiting_document',
+      requestType: request.type,
+      tone,
+      name: inbound.pushName,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const text = buildCpfRequestMessage({ name: inbound.pushName, tone });
     const send = await evolution.sendText({ to: inbound.from, text });
-    return { ok: true, classification, needsDocument: true, action: send };
+    return { ok: true, classification: { ...classification, financialRequest: request, tone }, needsDocument: true, action: send };
   }
 
   const paymentInfo = await sgp.getPaymentInfoByCpf(cpfcnpj);
   const payment = buildPaymentResponse(paymentInfo);
+  const request = detectFinancialRequest(inbound.text);
   lastPaymentBySender.set(inbound.from, payment);
-  const messages = buildCustomerPaymentMessages(payment);
+  conversationStateBySender.set(inbound.from, {
+    stage: 'payment_returned',
+    requestType: request.type,
+    tone: detectTone(inbound.text),
+    name: inbound.pushName,
+    document: maskDocument(cpfcnpj),
+    payment,
+    updatedAt: new Date().toISOString(),
+  });
+  const messages = [
+    buildFoundInvoiceMessage({ name: inbound.pushName, payment, requestType: request.type }),
+    ...messagesForRequestType({ payment, requestType: request.type, builders: { pix: buildPixMessage, link: buildPaymentLinkMessage } }),
+  ];
   const sends = [];
   for (const text of messages) {
     sends.push(await evolution.sendText({ to: inbound.from, text }));
@@ -108,16 +185,7 @@ export async function handleInbound(payload) {
     ok: true,
     classification,
     document: maskDocument(cpfcnpj),
-    payment: {
-      contrato: payment.contrato,
-      fatura: payment.fatura,
-      valor_atual: payment.valor_atual,
-      vencimento_atual: payment.vencimento_atual,
-      has_pix: Boolean(payment.pix_copia_cola),
-      has_linha_digitavel: Boolean(payment.linha_digitavel),
-      has_link_pagamento: Boolean(payment.link_pagamento),
-      has_boleto_link: Boolean(payment.boleto_link),
-    },
+    payment: summarizePayment(payment),
     action: sends.at(-1),
     actions: sends,
   };
