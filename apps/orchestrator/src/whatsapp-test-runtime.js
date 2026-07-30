@@ -43,6 +43,7 @@ const DOCUMENT_TTL_MS = Number(process.env.EMY_DOCUMENT_VALIDATION_TTL_MS || DEF
 const MAX_DOCUMENT_ATTEMPTS = Number(process.env.EMY_MAX_DOCUMENT_ATTEMPTS || DEFAULT_MAX_DOCUMENT_ATTEMPTS);
 const lastPaymentBySender = new Map();
 const conversationStateBySender = new Map();
+const latestInboundMessageBySender = new Map();
 
 function summarizePayment(payment) {
   return {
@@ -179,9 +180,9 @@ async function auditToolCall(inbound, entry) {
   }
 }
 
-async function escalateSecurityHandoff(inbound, state, reason) {
+async function escalateSecurityHandoff(inbound, state, reason, sendCustomerText) {
   const text = buildSecurityHandoffMessage({ name: state?.name || inbound.pushName });
-  const send = await evolution.sendText({ to: inbound.from, text });
+  const send = await sendCustomerText(text);
   const savedState = await saveConversationState(inbound, { ...(state || {}), stage: 'human_escalation_requested', securityBlocked: true, securityReason: reason });
   await auditDecision(inbound, {
     decisionType: 'financeiro.security_handoff',
@@ -244,11 +245,25 @@ export async function handleInbound(payload) {
     return { ok: true, ignored: true, reason: 'sender_not_allowlisted', from: inbound.from };
   }
 
+  const inboundToken = inbound.messageId || `${Date.now()}-${Math.random()}`;
+  latestInboundMessageBySender.set(inbound.from, inboundToken);
+  let customerMessagesSent = 0;
+  const sendCustomerText = async (text) => {
+    const result = await evolution.sendTextHumanized({
+      to: inbound.from,
+      text,
+      first: customerMessagesSent === 0,
+      shouldSend: () => latestInboundMessageBySender.get(inbound.from) === inboundToken,
+    });
+    customerMessagesSent += 1;
+    return result;
+  };
+
   const optionText = inbound.text.toLowerCase().trim();
   const existingState = await loadConversationState(inbound);
 
   if (existingState?.securityBlocked) {
-    return escalateSecurityHandoff(inbound, existingState, existingState.securityReason || 'security_block_active');
+    return escalateSecurityHandoff(inbound, existingState, existingState.securityReason || 'security_block_active', sendCustomerText);
   }
 
   if (existingState?.stage === 'payment_returned' && documentValidationExpired(existingState, DOCUMENT_TTL_MS)) {
@@ -265,7 +280,7 @@ export async function handleInbound(payload) {
       documentAttempts: 0,
     });
     const text = buildExpiredDocumentMessage({ name: savedState.name || inbound.pushName });
-    const send = await evolution.sendText({ to: inbound.from, text });
+    const send = await sendCustomerText(text);
     await auditDecision(inbound, {
       decisionType: 'financeiro.document_expired',
       decision: { previousStage: existingState.stage, newStage: 'awaiting_document', ttlMs: DOCUMENT_TTL_MS },
@@ -277,7 +292,7 @@ export async function handleInbound(payload) {
 
   if (existingState?.stage === 'no_open_invoice' && isAnticipatedPaymentRequest(inbound.text)) {
     const text = buildAnticipatedPaymentClientMessage({ name: existingState.name });
-    const send = await evolution.sendText({ to: inbound.from, text });
+    const send = await sendCustomerText(text);
     const internalAlert = await evolution.sendInternalText({
       to: process.env.FINANCE_HUMAN_GROUP_JID || '',
       text: buildAnticipatedPaymentInternalMessage({
@@ -306,17 +321,17 @@ export async function handleInbound(payload) {
   if (lastPayment && existingState && documentValidationExpired(existingState, DOCUMENT_TTL_MS)) {
     lastPaymentBySender.delete(inbound.from);
     const savedState = await saveConversationState(inbound, { ...existingState, stage: 'awaiting_document', payment: null, paymentSummary: null, document: null, documentValidatedAt: null, documentAttempts: 0 });
-    const send = await evolution.sendText({ to: inbound.from, text: buildExpiredDocumentMessage({ name: savedState.name || inbound.pushName }) });
+    const send = await sendCustomerText(buildExpiredDocumentMessage({ name: savedState.name || inbound.pushName }));
     await auditDecision(inbound, { decisionType: 'financeiro.payment_option_blocked_expired_document', decision: { optionText, ttlMs: DOCUMENT_TTL_MS }, requiresHuman: false, confidence: 1 });
     return { ok: true, classification: { area: 'financeiro', intent: 'document_validation_expired', confidence: 1 }, needsDocument: true, action: send };
   }
   if (lastPayment && ['1', 'pix', 'pix copia e cola', 'copia e cola'].includes(optionText)) {
-    const send = await evolution.sendText({ to: inbound.from, text: buildPixMessage(lastPayment) });
+    const send = await sendCustomerText(buildPixMessage(lastPayment));
     await auditDecision(inbound, { decisionType: 'financeiro.payment_pix_option', decision: { payment: summarizePayment(lastPayment) }, requiresHuman: false, confidence: 1 });
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_pix_option', confidence: 1 }, action: send };
   }
   if (lastPayment && ['2', 'link', 'link de pagamento', 'qrcode', 'qr code', 'boleto'].includes(optionText)) {
-    const send = await evolution.sendText({ to: inbound.from, text: buildPaymentLinkMessage(lastPayment) });
+    const send = await sendCustomerText(buildPaymentLinkMessage(lastPayment));
     await auditDecision(inbound, { decisionType: 'financeiro.payment_link_option', decision: { payment: summarizePayment(lastPayment) }, requiresHuman: false, confidence: 1 });
     return { ok: true, classification: { area: 'financeiro', intent: 'payment_link_option', confidence: 1 }, action: send };
   }
@@ -333,9 +348,9 @@ export async function handleInbound(payload) {
       requiresHuman: attempt.blocked,
       confidence: 1,
     });
-    if (attempt.blocked) return escalateSecurityHandoff(inbound, savedState, 'document_attempts_exceeded');
+    if (attempt.blocked) return escalateSecurityHandoff(inbound, savedState, 'document_attempts_exceeded', sendCustomerText);
     const text = buildDocumentAttemptMessage({ attempts: attempt.attempts, maxAttempts: MAX_DOCUMENT_ATTEMPTS });
-    const send = await evolution.sendText({ to: inbound.from, text });
+    const send = await sendCustomerText(text);
     return { ok: true, classification: { area: 'financeiro', intent: 'invalid_document_attempt', confidence: 1 }, needsDocument: true, action: send };
   }
 
@@ -365,7 +380,7 @@ export async function handleInbound(payload) {
         daysUntilNextDue: payment.next_invoice_estimate?.daysUntilNextDue,
         contracts: payment.historical_contracts || [],
       });
-      const send = await evolution.sendText({ to: inbound.from, text });
+      const send = await sendCustomerText(text);
       return { ok: true, classification: { area: 'financeiro', intent: 'no_open_invoice', confidence: 1 }, document: maskDocument(cpfcnpj), action: send };
     }
     lastPaymentBySender.set(inbound.from, payment);
@@ -387,7 +402,7 @@ export async function handleInbound(payload) {
       }),
     ];
     const sends = [];
-    for (const text of messages) sends.push(await evolution.sendText({ to: inbound.from, text }));
+    for (const text of messages) sends.push(await sendCustomerText(text));
     return {
       ok: true,
       classification: { area: 'financeiro', intent: 'financial_document_received', confidence: 1 },
@@ -401,7 +416,7 @@ export async function handleInbound(payload) {
   const classification = classifyIntent(inbound.text);
   if (classification.area !== 'financeiro') {
     const text = 'Recebi sua mensagem no ambiente de teste da Emy V2. Neste primeiro teste estou validando apenas o Financeiro: boleto, PIX, linha digitável e link de pagamento.';
-    const send = await evolution.sendText({ to: inbound.from, text });
+    const send = await sendCustomerText(text);
     return { ok: true, classification, action: send };
   }
 
@@ -416,7 +431,7 @@ export async function handleInbound(payload) {
       startedAt: new Date().toISOString(),
     });
     const text = buildCpfRequestMessage({ name: inbound.pushName, tone });
-    const send = await evolution.sendText({ to: inbound.from, text });
+    const send = await sendCustomerText(text);
     return { ok: true, classification: { ...classification, financialRequest: request, tone }, needsDocument: true, action: send };
   }
 
@@ -448,7 +463,7 @@ export async function handleInbound(payload) {
       daysUntilNextDue: payment.next_invoice_estimate?.daysUntilNextDue,
       contracts: payment.historical_contracts || [],
     });
-    const send = await evolution.sendText({ to: inbound.from, text });
+    const send = await sendCustomerText(text);
     return { ok: true, classification: { ...classification, intent: 'no_open_invoice' }, document: maskDocument(cpfcnpj), action: send };
   }
   lastPaymentBySender.set(inbound.from, payment);
@@ -468,7 +483,7 @@ export async function handleInbound(payload) {
   ];
   const sends = [];
   for (const text of messages) {
-    sends.push(await evolution.sendText({ to: inbound.from, text }));
+    sends.push(await sendCustomerText(text));
   }
 
   return {
