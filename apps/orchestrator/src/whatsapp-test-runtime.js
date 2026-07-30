@@ -43,7 +43,7 @@ import {
   documentValidationExpired,
   incrementDocumentAttempts,
 } from './core/financial-security.js';
-import { classifyIntent } from './core/router.js';
+import { buildRouterClientMessage, buildRouterPrivateNote, classifyIntent } from './core/router.js';
 import { isAllowlistedWhatsappNumber, normalizeWhatsappNumber, parseAllowlist } from './core/safety.js';
 
 loadEnvFile();
@@ -135,6 +135,25 @@ async function getChatwootHumanControlStatus(phone) {
   }
 }
 
+async function createChatwootRouterNote(inbound, classification) {
+  try {
+    const result = await chatwoot.createPrivateNoteByPhone(inbound.from, buildRouterPrivateNote({ inbound, classification }));
+    console.log(JSON.stringify({
+      event: 'chatwoot_router_note_result',
+      ok: result?.ok || false,
+      skipped: result?.skipped || false,
+      reason: result?.reason || null,
+      conversationId: result?.conversationId || null,
+      noteId: result?.noteId || null,
+      checked_at: new Date().toISOString(),
+    }));
+    return result;
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'chatwoot_router_note_failed', error: error.message, from: inbound.from, checked_at: new Date().toISOString() }));
+    return { ok: false, error: error.message };
+  }
+}
+
 async function createChatwootHandoffNote(inbound, state) {
   try {
     const result = await chatwoot.createPrivateNoteByPhone(inbound.from, buildFinanceHandoffNote({ inbound, state }));
@@ -168,6 +187,8 @@ function sanitizeConversationState(state = {}) {
     documentAttempts: state.documentAttempts || 0,
     securityBlocked: state.securityBlocked || false,
     followup: state.followup,
+    router: state.router,
+    activeAgent: state.activeAgent,
     startedAt: state.startedAt,
     updatedAt: state.updatedAt,
   };
@@ -203,7 +224,7 @@ async function saveConversationState(inbound, state) {
       area: 'financeiro',
       intent: updatedState.requestType || null,
       stage: updatedState.stage,
-      activeAgent: 'emy-financeiro',
+      activeAgent: updatedState.activeAgent || 'emy-financeiro',
       pendingQuestion: updatedState.stage === 'awaiting_document',
       recentContext: sanitizeConversationState(updatedState),
       safeToClose: false,
@@ -517,11 +538,28 @@ export async function handleInbound(payload) {
     };
   }
 
-  const classification = classifyIntent(inbound.text);
+  const classification = classifyIntent(inbound.text, existingState || {});
+  await auditDecision(inbound, {
+    decisionType: 'orquestradora.intent_classification',
+    decision: classification,
+    requiresHuman: Boolean(classification.requiresHuman),
+    confidence: classification.confidence,
+  });
+
   if (classification.area !== 'financeiro') {
-    const text = 'Recebi sua mensagem no ambiente de teste da Emy V2. Neste primeiro teste estou validando apenas o Financeiro: boleto, PIX, linha digitável e link de pagamento.';
+    const savedState = await saveConversationState(inbound, {
+      ...(existingState || {}),
+      stage: classification.requiresHuman ? 'human_escalation_requested' : 'routed_to_specialist',
+      requestType: classification.intent,
+      router: classification,
+      activeAgent: classification.activeAgent,
+      name: existingState?.name || inbound.pushName,
+      followup: null,
+    });
+    const chatwootNote = await createChatwootRouterNote(inbound, classification);
+    const text = buildRouterClientMessage(classification, { name: savedState.name || inbound.pushName });
     const send = await sendCustomerText(text);
-    return { ok: true, classification, action: send };
+    return { ok: true, classification, action: send, chatwootNote, requiresHuman: classification.requiresHuman };
   }
 
   if (!cpfcnpj) {
